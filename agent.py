@@ -14,6 +14,11 @@
 import os
 import sys
 
+try:
+    import pwd
+except ImportError:
+    pwd = None  # Windows
+
 # Before onnxruntime is imported (via openwakeword): reduce DRM/GPU probe noise on Pi
 if sys.platform.startswith("linux"):
     os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")
@@ -150,7 +155,49 @@ def resolve_input_device(config):
     print(f"[AUDIO] Input device name not found: {requested}", flush=True)
     return None
 
-INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
+
+def finalize_input_device_selection(config):
+    """
+    When input_device is unset ('default'), PortAudio still uses internal index -1, which
+    breaks query_devices/check_input_settings on some Linux/ALSA setups. Pick a real index.
+    """
+    chosen = resolve_input_device(config)
+    if chosen is not None:
+        return chosen
+    try:
+        devices = sd.query_devices()
+    except Exception as e:
+        print(f"[AUDIO] Cannot enumerate audio devices: {e}", flush=True)
+        return None
+    try:
+        default_in, _ = sd.default.device
+    except Exception:
+        default_in = None
+    if default_in is not None and isinstance(default_in, int) and default_in >= 0:
+        if default_in < len(devices):
+            info = devices[default_in]
+            if info.get("max_input_channels", 0) > 0:
+                print(
+                    f"[AUDIO] Using host default input device {default_in}: {info.get('name')}",
+                    flush=True,
+                )
+                return default_in
+            print(
+                f"[AUDIO] Host default input {default_in} has no input channels; searching…",
+                flush=True,
+            )
+    for idx, dev in enumerate(devices):
+        if dev.get("max_input_channels", 0) > 0:
+            print(
+                f"[AUDIO] Using first input-capable device {idx}: {dev.get('name')}",
+                flush=True,
+            )
+            return idx
+    print("[AUDIO] No microphone (input) device found.", flush=True)
+    return None
+
+
+INPUT_DEVICE_NAME = finalize_input_device_selection(CURRENT_CONFIG)
 if INPUT_DEVICE_NAME is not None:
     try:
         device_info = sd.query_devices(INPUT_DEVICE_NAME)
@@ -240,7 +287,8 @@ class BotGUI:
     def __init__(self, master):
         self.master = master
         master.title("Pi Assistant")
-        master.attributes('-fullscreen', True) 
+        master.attributes('-fullscreen', True)
+        master.protocol("WM_DELETE_WINDOW", self.safe_exit)
         master.bind('<Escape>', self.exit_fullscreen)
         
         # Inputs
@@ -333,22 +381,27 @@ class BotGUI:
 
         self.recording_active.clear()
         self.thinking_sound_active.clear()
-        self.tts_active.clear() 
-        
+        self.tts_active.clear()
+
         self.save_chat_history()
-        
-        try:
-            ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=0)
-        except: pass
+
         try:
             sd.stop()
         except: pass
 
+        def _unload_ollama():
+            try:
+                ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=0)
+            except Exception:
+                pass
+
+        threading.Thread(target=_unload_ollama, daemon=True).start()
+
         try:
-            self.master.quit()
+            self.master.destroy()
         except Exception:
             pass
-        
+
     def exit_fullscreen(self, event=None):
         self.master.attributes('-fullscreen', False)
         self.safe_exit()
@@ -644,6 +697,16 @@ class BotGUI:
             self.ptt_event.clear()
             return "PTT"
 
+        if INPUT_DEVICE_NAME is None:
+            print(
+                "[CRITICAL] No input (microphone) device found. Set \"input_device\" in config.json "
+                "(device index or name substring) or check ALSA/PipeWire. Using PTT (Enter) only.",
+                flush=True,
+            )
+            self.ptt_event.wait()
+            self.ptt_event.clear()
+            return "PTT"
+
         CHUNK_SIZE = 1280
         OWW_SAMPLE_RATE = 16000
 
@@ -693,73 +756,55 @@ class BotGUI:
         # and letting portaudio manage the buffering, OR very small chunks.
         
         # Let's try to be less aggressive with reads.
-        
-         with sd.InputStream(**stream_args) as stream:
-                print(f"[AUDIO] Listening with rate {stream_args['samplerate']} and block {stream_args['blocksize']}", flush=True)
-                
-                # Pre-allocate buffer for speed
-                # If blocksize is 0, we read what is available.
-                
-                while True:
-                    if self.ptt_event.is_set():
-                        self.ptt_event.clear()
-                        raise StopIteration("PTT")
 
-                    rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
-                    if rlist: 
-                        sys.stdin.readline()
-                        raise StopIteration("CLI")
+        with sd.InputStream(**stream_args) as stream:
+            print(f"[AUDIO] Listening with rate {stream_args['samplerate']} and block {stream_args['blocksize']}", flush=True)
 
-                    # If fallback mode (blocksize 0), read fixed amount
-                    read_size = input_chunk_size
-                    if stream_args.get('blocksize') == 0:
-                        read_size = 1024 # Safe small read
-                    
-                    try:
-                        data, overflow = stream.read(read_size)
-                        if overflow:
-                            print("!", end="", flush=True) 
-                            # If we overflow excessively, raise error to trigger fallback to SAFE MODE (PulseAudio/Software)
-                            # We can use a simple counter attached to the function or object, but here raising immediately 
-                            # after a few in a row is safest.
-                            raise RuntimeError("Audio Buffer Overflow - Triggering Safe Mode")
-                    except Exception as e:
-                        # Convert uncatchable PaErrorCode wrapper to standard Exception if needed
-                        # But honestly, `raise e` should work... unless it's a SystemExit?
-                        # Let's wrap it in a new exception to be sure it bubbles up
-                        raise RuntimeError(f"Audio read failed: {e}")
+            while True:
+                if self.ptt_event.is_set():
+                    self.ptt_event.clear()
+                    raise StopIteration("PTT")
 
-                    audio_data = np.frombuffer(data, dtype=np.int16)
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
+                if rlist:
+                    sys.stdin.readline()
+                    raise StopIteration("CLI")
 
-                    # Ensure flattening for openwakeword compatibility
-                    if audio_data.ndim > 1:
-                        audio_data = audio_data.flatten()
+                read_size = input_chunk_size
+                if stream_args.get("blocksize") == 0:
+                    read_size = 1024
 
-                    if use_resampling:
-                        # FAST RESAMPLING: Nearest-neighbor slicing instead of scipy.signal.resample
-                        # This avoids the CPU bottleneck that causes overflow (!!!!!!!) on Raspberry Pi
-                        step = len(audio_data) / target_chunk_size
-                        indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
-                        audio_data = audio_data[indices]
-                    
-                    # Convert to float for model prediction without needing heavy resampling logic
-                    # The wake word model needs 16000, which we just faked above.
-                    
-                    # Debug volume occasionally
-                    current_max = np.max(np.abs(audio_data))
-                    
-                    # Only predict if volume is significant to save CPU
-                    if current_max > 200: 
-                        prediction = self.oww_model.predict(audio_data)
-                        for mdl in self.oww_model.prediction_buffer.keys():
-                            score = list(self.oww_model.prediction_buffer[mdl])[-1]
-                            if score > 0.1: # Show potential triggers
-                                print(f"\r[Oww] Score: {score:.3f} | Vol: {current_max}   ", end="", flush=True)
+                try:
+                    data, overflow = stream.read(read_size)
+                    if overflow:
+                        print("!", end="", flush=True)
+                        raise RuntimeError("Audio Buffer Overflow - Triggering Safe Mode")
+                except Exception as e:
+                    raise RuntimeError(f"Audio read failed: {e}") from e
 
-                            if score > WAKE_WORD_THRESHOLD:
-                                print(f"\n[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
-                                self.oww_model.reset() 
-                                return # Success
+                audio_data = np.frombuffer(data, dtype=np.int16)
+
+                if audio_data.ndim > 1:
+                    audio_data = audio_data.flatten()
+
+                if use_resampling:
+                    step = len(audio_data) / target_chunk_size
+                    indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
+                    audio_data = audio_data[indices]
+
+                current_max = np.max(np.abs(audio_data))
+
+                if current_max > 200:
+                    self.oww_model.predict(audio_data)
+                    for mdl in self.oww_model.prediction_buffer.keys():
+                        score = list(self.oww_model.prediction_buffer[mdl])[-1]
+                        if score > 0.1:
+                            print(f"\r[Oww] Score: {score:.3f} | Vol: {current_max}   ", end="", flush=True)
+
+                        if score > WAKE_WORD_THRESHOLD:
+                            print(f"\n[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
+                            self.oww_model.reset()
+                            return
 
 
     def record_voice_adaptive(self, filename="input.wav"):
@@ -1146,6 +1191,29 @@ class BotGUI:
             json.dump([full[0]] + conv, f, indent=4)
 
 
+def _candidate_xauthority_paths_for_root():
+    """Root shells rarely have the desktop MIT cookie; try the logged-in user's file first."""
+    paths = []
+    sudo_uid = (os.environ.get("SUDO_UID") or "").strip()
+    if sudo_uid.isdigit() and pwd is not None:
+        try:
+            paths.append(os.path.join(pwd.getpwuid(int(sudo_uid)).pw_dir, ".Xauthority"))
+        except (KeyError, ValueError):
+            pass
+    for name in ("mags", "pi"):
+        paths.append(os.path.join("/home", name, ".Xauthority"))
+    env_xa = (os.environ.get("XAUTHORITY") or "").strip()
+    if env_xa:
+        paths.append(env_xa)
+    paths.append(os.path.expanduser("~/.Xauthority"))
+    seen, out = set(), []
+    for p in paths:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def _ensure_linux_display():
     """Tk/X11 expect DISPLAY like :0 or :0.0, not bare 0 (common typo)."""
     if not sys.platform.startswith("linux"):
@@ -1161,10 +1229,38 @@ def _ensure_linux_display():
             "(X11 needs a leading colon, e.g. export DISPLAY=:0)",
             flush=True,
         )
+
+    override = (os.environ.get("BE_MORE_AGENT_XAUTHORITY") or "").strip()
+    if override:
+        if os.path.isfile(override):
+            os.environ["XAUTHORITY"] = override
+            print(f"[GUI] XAUTHORITY={override} (BE_MORE_AGENT_XAUTHORITY)", flush=True)
+            return
+        print(f"[GUI] BE_MORE_AGENT_XAUTHORITY is not a file: {override}", flush=True)
+
+    if os.geteuid() == 0:
+        for path in _candidate_xauthority_paths_for_root():
+            if os.path.isfile(path):
+                os.environ["XAUTHORITY"] = path
+                print(
+                    f"[GUI] Running as root: using XAUTHORITY={path}",
+                    flush=True,
+                )
+                break
+        else:
+            print(
+                "[GUI] No .Xauthority found for root. The GUI session belongs to your normal user.\n"
+                "  Prefer: sudo -u mags env DISPLAY=:0 XAUTHORITY=/home/mags/.Xauthority python3 agent.py\n"
+                "  Or run: su - mags  then  python3 agent.py",
+                flush=True,
+            )
+        return
+
     if not os.environ.get("XAUTHORITY"):
         xa = os.path.expanduser("~/.Xauthority")
         if os.path.isfile(xa):
             os.environ["XAUTHORITY"] = xa
+            print(f"[GUI] XAUTHORITY={xa}", flush=True)
 
 
 if __name__ == "__main__":
