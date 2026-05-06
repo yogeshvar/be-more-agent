@@ -66,6 +66,13 @@ from duckduckgo_search import DDGS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+_DATA_DIR_ENV = (os.environ.get("BE_MORE_AGENT_DATA_DIR") or "").strip()
+DATA_DIR = (
+    os.path.abspath(os.path.expanduser(_DATA_DIR_ENV)) if _DATA_DIR_ENV else BASE_DIR
+)
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
+
 
 def resolve_faces_dir():
     """Face animation root: repo faces/ by default, or BE_MORE_AGENT_FACES override."""
@@ -84,10 +91,8 @@ def _animation_frame_sort_key(filename):
     return (int(match.group(1)), lower) if match else (10**6, lower)
 
 
-CONFIG_FILE = "config.json"
-MEMORY_FILE = "memory.json"
-BMO_IMAGE_FILE = "current_image.jpg"
-WAKE_WORD_MODEL = "./wakeword.onnx"
+BMO_IMAGE_FILE = os.path.join(DATA_DIR, "current_image.jpg")
+WAKE_WORD_MODEL = os.path.join(BASE_DIR, "wakeword.onnx")
 WAKE_WORD_THRESHOLD = 0.5
 
 # HARDWARE SETTINGS
@@ -158,42 +163,75 @@ def resolve_input_device(config):
 
 def finalize_input_device_selection(config):
     """
-    When input_device is unset ('default'), PortAudio still uses internal index -1, which
-    breaks query_devices/check_input_settings on some Linux/ALSA setups. Pick a real index.
+    Never rely on PortAudio 'default' (internal -1): verify an index with check_input_settings.
+    Tries config override, host default, then every input-capable device.
     """
-    chosen = resolve_input_device(config)
-    if chosen is not None:
-        return chosen
     try:
         devices = sd.query_devices()
     except Exception as e:
         print(f"[AUDIO] Cannot enumerate audio devices: {e}", flush=True)
         return None
+
+    candidates = []
+    explicit = resolve_input_device(config)
+    if explicit is not None:
+        try:
+            ei = int(explicit)
+            if 0 <= ei < len(devices) and devices[ei].get("max_input_channels", 0) > 0:
+                candidates.append(ei)
+        except (TypeError, ValueError):
+            pass
+
     try:
         default_in, _ = sd.default.device
+        if hasattr(default_in, "item"):
+            default_in = default_in.item()
+        default_in = int(default_in) if default_in is not None else -1
+        if 0 <= default_in < len(devices) and devices[default_in].get("max_input_channels", 0) > 0:
+            if default_in not in candidates:
+                candidates.append(default_in)
     except Exception:
-        default_in = None
-    if default_in is not None and isinstance(default_in, int) and default_in >= 0:
-        if default_in < len(devices):
-            info = devices[default_in]
-            if info.get("max_input_channels", 0) > 0:
+        pass
+
+    for idx, dev in enumerate(devices):
+        if dev.get("max_input_channels", 0) > 0 and idx not in candidates:
+            candidates.append(idx)
+
+    preferred = config.get("input_sample_rate")
+    rates = []
+    if preferred not in (None, ""):
+        try:
+            rates.append(int(preferred))
+        except (TypeError, ValueError):
+            pass
+    for r in (16000, 48000, 44100, 32000, 22050):
+        if r not in rates:
+            rates.append(r)
+
+    for idx in candidates:
+        try:
+            info = sd.query_devices(idx)
+        except Exception:
+            continue
+        if info.get("max_input_channels", 0) <= 0:
+            continue
+        for rate in rates:
+            try:
+                sd.check_input_settings(
+                    device=idx, samplerate=rate, channels=1, dtype="int16"
+                )
                 print(
-                    f"[AUDIO] Using host default input device {default_in}: {info.get('name')}",
+                    f"[AUDIO] Using input device {idx}: {info.get('name')} (checked at {rate} Hz)",
                     flush=True,
                 )
-                return default_in
-            print(
-                f"[AUDIO] Host default input {default_in} has no input channels; searching…",
-                flush=True,
-            )
-    for idx, dev in enumerate(devices):
-        if dev.get("max_input_channels", 0) > 0:
-            print(
-                f"[AUDIO] Using first input-capable device {idx}: {dev.get('name')}",
-                flush=True,
-            )
-            return idx
-    print("[AUDIO] No microphone (input) device found.", flush=True)
+                return idx
+            except Exception:
+                continue
+
+    print(
+        '[AUDIO] No working microphone; set "input_device" in config.json to an index or name.',
+        flush=True,
+    )
     return None
 
 
@@ -271,10 +309,10 @@ You: {"action": "capture_image", "value": "environment"}
 SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + "\n\n" + CURRENT_CONFIG.get("system_prompt_extras", "")
 
 # Sound Directories
-greeting_sounds_dir = "sounds/greeting_sounds"
-ack_sounds_dir = "sounds/ack_sounds"
-thinking_sounds_dir = "sounds/thinking_sounds"
-error_sounds_dir = "sounds/error_sounds"
+greeting_sounds_dir = os.path.join(BASE_DIR, "sounds", "greeting_sounds")
+ack_sounds_dir = os.path.join(BASE_DIR, "sounds", "ack_sounds")
+thinking_sounds_dir = os.path.join(BASE_DIR, "sounds", "thinking_sounds")
+error_sounds_dir = os.path.join(BASE_DIR, "sounds", "error_sounds")
 
 # =========================================================================
 # 2. GUI CLASS
@@ -445,7 +483,7 @@ class BotGUI:
             self.set_state(BotStates.IDLE, "Interrupted.")
 
     def _frame_to_screen_photo(self, pil_img: Image.Image) -> ImageTk.PhotoImage:
-        """Trim transparent margins, preserve aspect ratio, center on black so the character fills the view."""
+        """Trim transparent margins, then scale to *cover* BG (fill screen, center-crop). No letterboxing."""
         w, h = self.BG_WIDTH, self.BG_HEIGHT
         img = pil_img.convert("RGBA")
         bbox = img.getbbox()
@@ -458,15 +496,14 @@ class BotGUI:
         if iw <= 0 or ih <= 0:
             blank = Image.new("RGB", (w, h), (0, 0, 0))
             return ImageTk.PhotoImage(blank)
-        scale = min(w / iw, h / ih)
+        scale = max(w / iw, h / ih)
         nw = max(1, int(round(iw * scale)))
         nh = max(1, int(round(ih * scale)))
         img = img.resize((nw, nh), _LANCZOS)
-        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-        ox = (w - nw) // 2
-        oy = (h - nh) // 2
-        canvas.paste(img, (ox, oy), img)
-        return ImageTk.PhotoImage(canvas.convert("RGB"))
+        left = max(0, (nw - w) // 2)
+        top = max(0, (nh - h) // 2)
+        img = img.crop((left, top, left + w, top + h))
+        return ImageTk.PhotoImage(img.convert("RGB"))
 
     def load_animations(self):
         base_path = resolve_faces_dir()
@@ -715,11 +752,11 @@ class BotGUI:
         input_chunk_size = int(CHUNK_SIZE * (input_rate / OWW_SAMPLE_RATE)) if use_resampling else CHUNK_SIZE
 
         stream_args = {
-            "samplerate": input_rate, 
-            "channels": 1, 
-            "dtype": 'int16', 
-            "blocksize": input_chunk_size, 
-            "device": INPUT_DEVICE_NAME
+            "samplerate": input_rate,
+            "channels": 1,
+            "dtype": "int16",
+            "blocksize": input_chunk_size,
+            "device": int(INPUT_DEVICE_NAME),
         }
 
         # Try to find a compatible block size and sample rate
@@ -842,7 +879,7 @@ class BotGUI:
             time.sleep(0.2)
             
             with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, 
-                                device=INPUT_DEVICE_NAME, blocksize=chunk_size): 
+                                device=int(INPUT_DEVICE_NAME), blocksize=chunk_size): 
                 while not silence_started and recorded_chunks < max_chunks:
                     sd.sleep(int(chunk_duration * 1000))
         except Exception as e: 
@@ -865,7 +902,7 @@ class BotGUI:
             sd.stop() 
             time.sleep(0.2)
             
-            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, device=INPUT_DEVICE_NAME):
+            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, device=int(INPUT_DEVICE_NAME)):
                 while self.recording_active.is_set(): 
                     sd.sleep(50)
         except Exception as e: 
@@ -1186,9 +1223,23 @@ class BotGUI:
     def save_chat_history(self):
         full = self.permanent_memory + self.session_memory
         conv = full[1:]
-        if len(conv) > 10: conv = conv[-10:]
-        with open(MEMORY_FILE, "w") as f: 
-            json.dump([full[0]] + conv, f, indent=4)
+        if len(conv) > 10:
+            conv = conv[-10:]
+        payload = [full[0]] + conv
+        try:
+            mem_dir = os.path.dirname(MEMORY_FILE)
+            if mem_dir:
+                os.makedirs(mem_dir, mode=0o755, exist_ok=True)
+            with open(MEMORY_FILE, "w") as f:
+                json.dump(payload, f, indent=4)
+        except PermissionError as e:
+            print(
+                f"[MEMORY] Permission denied writing {MEMORY_FILE}: {e}. "
+                "Use the same user for every run, or export BE_MORE_AGENT_DATA_DIR to a writable folder.",
+                flush=True,
+            )
+        except OSError as e:
+            print(f"[MEMORY] Could not save chat history: {e}", flush=True)
 
 
 def _candidate_xauthority_paths_for_root():
