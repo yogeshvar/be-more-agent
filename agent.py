@@ -21,6 +21,10 @@ if sys.platform.startswith("linux"):
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+try:
+    _LANCZOS = Image.Resampling.LANCZOS
+except AttributeError:
+    _LANCZOS = Image.LANCZOS
 import threading
 import time
 import json
@@ -387,6 +391,30 @@ class BotGUI:
                 except: pass
             self.set_state(BotStates.IDLE, "Interrupted.")
 
+    def _frame_to_screen_photo(self, pil_img: Image.Image) -> ImageTk.PhotoImage:
+        """Trim transparent margins, preserve aspect ratio, center on black so the character fills the view."""
+        w, h = self.BG_WIDTH, self.BG_HEIGHT
+        img = pil_img.convert("RGBA")
+        bbox = img.getbbox()
+        if bbox:
+            bw = bbox[2] - bbox[0]
+            bh = bbox[3] - bbox[1]
+            if bw > 0 and bh > 0:
+                img = img.crop(bbox)
+        iw, ih = img.size
+        if iw <= 0 or ih <= 0:
+            blank = Image.new("RGB", (w, h), (0, 0, 0))
+            return ImageTk.PhotoImage(blank)
+        scale = min(w / iw, h / ih)
+        nw = max(1, int(round(iw * scale)))
+        nh = max(1, int(round(ih * scale)))
+        img = img.resize((nw, nh), _LANCZOS)
+        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+        ox = (w - nw) // 2
+        oy = (h - nh) // 2
+        canvas.paste(img, (ox, oy), img)
+        return ImageTk.PhotoImage(canvas.convert("RGB"))
+
     def load_animations(self):
         base_path = resolve_faces_dir()
         print(f"[ANIMATION] Loading faces from: {base_path}", flush=True)
@@ -406,8 +434,9 @@ class BotGUI:
                 for f in files:
                     file_path = os.path.join(folder, f)
                     try:
-                        img = Image.open(file_path).resize((self.BG_WIDTH, self.BG_HEIGHT))
-                        self.animations[state].append(ImageTk.PhotoImage(img))
+                        with Image.open(file_path) as raw:
+                            frame = raw.copy()
+                        self.animations[state].append(self._frame_to_screen_photo(frame))
                     except Exception as exc:
                         print(f"[ANIMATION] Failed to load {file_path}: {exc}", flush=True)
             else:
