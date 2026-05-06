@@ -11,17 +11,22 @@
 #  This project is a generic framework and includes no copyrighted assets.
 # =========================================================================
 
+import os
+import sys
+
+# Before onnxruntime is imported (via openwakeword): reduce DRM/GPU probe noise on Pi
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")
+
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
 import threading
 import time
 import json
-import os
 import subprocess
 import random
 import re
-import sys
 import select
 import traceback
 import atexit
@@ -49,6 +54,26 @@ from duckduckgo_search import DDGS
 # =========================================================================
 # 1. CONFIGURATION & CONSTANTS
 # =========================================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_faces_dir():
+    """Face animation root: repo faces/ by default, or BE_MORE_AGENT_FACES override."""
+    override = (os.environ.get("BE_MORE_AGENT_FACES") or "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(BASE_DIR, "faces")
+
+
+def _animation_frame_sort_key(filename):
+    """Sort 01-frame.png … 10-frame.png in numeric order."""
+    lower = filename.lower()
+    if lower.startswith(".") or lower == ".ds_store":
+        return (10**9, lower)
+    match = re.search(r"(\d+)", filename)
+    return (int(match.group(1)), lower) if match else (10**6, lower)
+
 
 CONFIG_FILE = "config.json"
 MEMORY_FILE = "memory.json"
@@ -161,6 +186,7 @@ class BotStates:
     LISTENING = "listening"   
     THINKING = "thinking"     
     SPEAKING = "speaking"     
+    LOADING = "loading"
     ERROR = "error"           
     CAPTURING = "capturing" 
     WARMUP = "warmup"       
@@ -219,7 +245,7 @@ class BotGUI:
         atexit.register(self.safe_exit)
         
         # State
-        self.current_state = BotStates.WARMUP
+        self.current_state = BotStates.LOADING
         self.current_volume = 0 
         self.animations = {}
         self.current_frame_index = 0
@@ -362,13 +388,21 @@ class BotGUI:
             self.set_state(BotStates.IDLE, "Interrupted.")
 
     def load_animations(self):
-        base_path = "faces"
+        base_path = resolve_faces_dir()
+        print(f"[ANIMATION] Loading faces from: {base_path}", flush=True)
         states = ["idle", "listening", "thinking", "speaking", "loading", "error", "capturing", "warmup"]
         for state in states:
             folder = os.path.join(base_path, state)
             self.animations[state] = []
             if os.path.exists(folder):
-                files = sorted([f for f in os.listdir(folder) if f.lower().endswith(".png")])
+                files = sorted(
+                    [
+                        f
+                        for f in os.listdir(folder)
+                        if f.lower().endswith(".png") and not f.startswith(".")
+                    ],
+                    key=_animation_frame_sort_key,
+                )
                 for f in files:
                     file_path = os.path.join(folder, f)
                     try:
@@ -561,11 +595,12 @@ class BotGUI:
             self.set_state(BotStates.ERROR, f"Fatal Error: {str(e)[:40]}")
 
     def warm_up_logic(self):
-        self.set_state(BotStates.WARMUP, "Warming up brains...")
+        self.set_state(BotStates.LOADING, "Warming up brains...")
         try:
             ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=-1)
         except Exception as e:
             print(f"Failed to load {TEXT_MODEL}: {e}", flush=True)
+        self.set_state(BotStates.WARMUP, "Hello!")
         self.play_sound(self.get_random_sound(greeting_sounds_dir))
         print("Models loaded.", flush=True)
 
@@ -1081,8 +1116,31 @@ class BotGUI:
         with open(MEMORY_FILE, "w") as f: 
             json.dump([full[0]] + conv, f, indent=4)
 
+
+def _ensure_linux_display():
+    """Tk/X11 expect DISPLAY like :0 or :0.0, not bare 0 (common typo)."""
+    if not sys.platform.startswith("linux"):
+        return
+    raw = (os.environ.get("DISPLAY") or "").strip()
+    if not raw:
+        os.environ["DISPLAY"] = ":0"
+        print("[GUI] DISPLAY unset; using :0", flush=True)
+    elif re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        os.environ["DISPLAY"] = f":{raw}"
+        print(
+            f"[GUI] DISPLAY was {raw!r}; normalized to {os.environ['DISPLAY']!r} "
+            "(X11 needs a leading colon, e.g. export DISPLAY=:0)",
+            flush=True,
+        )
+    if not os.environ.get("XAUTHORITY"):
+        xa = os.path.expanduser("~/.Xauthority")
+        if os.path.isfile(xa):
+            os.environ["XAUTHORITY"] = xa
+
+
 if __name__ == "__main__":
     print("--- SYSTEM STARTING ---", flush=True)
+    _ensure_linux_display()
     root = tk.Tk()
     app = BotGUI(root)
     root.mainloop()
