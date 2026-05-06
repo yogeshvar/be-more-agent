@@ -363,21 +363,28 @@ class BotGUI:
 
     def load_animations(self):
         base_path = "faces"
-        states = ["idle", "listening", "thinking", "speaking", "error", "capturing", "warmup"] 
+        states = ["idle", "listening", "thinking", "speaking", "loading", "error", "capturing", "warmup"]
         for state in states:
             folder = os.path.join(base_path, state)
             self.animations[state] = []
             if os.path.exists(folder):
-                files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.png')])
+                files = sorted([f for f in os.listdir(folder) if f.lower().endswith(".png")])
                 for f in files:
-                    img = Image.open(os.path.join(folder, f)).resize((self.BG_WIDTH, self.BG_HEIGHT))
-                    self.animations[state].append(ImageTk.PhotoImage(img))
+                    file_path = os.path.join(folder, f)
+                    try:
+                        img = Image.open(file_path).resize((self.BG_WIDTH, self.BG_HEIGHT))
+                        self.animations[state].append(ImageTk.PhotoImage(img))
+                    except Exception as exc:
+                        print(f"[ANIMATION] Failed to load {file_path}: {exc}", flush=True)
+            else:
+                print(f"[ANIMATION] Missing folder: {folder}", flush=True)
+
             if not self.animations[state]:
-                if state in self.animations.get("idle", []):
-                     self.animations[state] = self.animations["idle"]
+                if self.animations.get("idle"):
+                    self.animations[state] = self.animations["idle"]
                 else:
-                    # Blue screen fallback
-                    blank = Image.new('RGB', (self.BG_WIDTH, self.BG_HEIGHT), color='#0000FF')
+                    # Blue screen fallback only when idle is unavailable.
+                    blank = Image.new("RGB", (self.BG_WIDTH, self.BG_HEIGHT), color="#0000FF")
                     self.animations[state].append(ImageTk.PhotoImage(blank))
 
     def update_animation(self):
