@@ -262,7 +262,7 @@ async def _voice_loop(settings: Settings, *, telemetry_enabled: bool = False) ->
         )
         typer.secho(
             f"Beemboy voice mode — model={settings.llama_model}. "
-            "Wake phrase: 'Beemboy'. Ctrl+C to quit.",
+            f"Wake phrase: '{settings.voice_wake_phrase}'. Ctrl+C to quit.",
             fg=typer.colors.GREEN,
         )
         try:

@@ -98,7 +98,7 @@ class VoiceAssistantLoop:
         return audio, phase
 
     async def run(self) -> None:
-        self._emit_status("Voice loop ready. Say 'Beemboy'. Ctrl+C to exit.")
+        self._emit_status(f"Voice loop ready. Say '{self._settings.voice_wake_phrase}'. Ctrl+C to exit.")
         turn_index = 0
         with MicrophoneLoop(self._audio_config) as mic:
             while True:

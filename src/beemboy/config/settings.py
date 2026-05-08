@@ -7,8 +7,7 @@ from functools import lru_cache
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field, field_validator
 
 
 class StdioMCPServer(BaseModel):
@@ -34,12 +33,8 @@ class HttpMCPServer(BaseModel):
 MCPServerDefinition = Annotated[StdioMCPServer | HttpMCPServer, Field(discriminator="transport")]
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+class Settings(BaseModel):
+    model_config = {"extra": "ignore"}
 
     assistant_name: str = "Beemboy"
     llama_base_url: str = "http://127.0.0.1:8080/v1"
@@ -57,39 +52,18 @@ class Settings(BaseSettings):
         description="Override: shell-style args after npx, e.g. '-y @modelcontextprotocol/server-brave-search'",
     )
 
-    mcp_servers: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("MCP_SERVERS", "mcp_servers"),
-    )
+    mcp_servers: str | None = None
 
     #: Same layout as ``mcp-proxy --named-server-config``: base URL, e.g. ``http://127.0.0.1:8001``
-    mcp_proxy_base_url: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("MCP_PROXY_BASE_URL", "mcp_proxy_base_url"),
-    )
+    mcp_proxy_base_url: str | None = None
     #: Path to JSON with top-level ``mcpServers`` object (keys = server names for URL paths).
-    mcp_proxy_config_path: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("MCP_PROXY_CONFIG", "mcp_proxy_config_path"),
-    )
+    mcp_proxy_config_path: str | None = None
     #: Comma-separated server names (same as keys in ``mcpServers``), optional if config path is set.
-    mcp_proxy_servers: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("MCP_PROXY_SERVERS", "mcp_proxy_servers"),
-    )
+    mcp_proxy_servers: str | None = None
     #: Path segment after server name: usually ``mcp`` (Streamable HTTP); use ``sse`` if needed.
-    mcp_proxy_url_suffix: str = Field(
-        default="mcp",
-        validation_alias=AliasChoices("MCP_PROXY_URL_SUFFIX", "mcp_proxy_url_suffix"),
-    )
-    default_mcp_enabled: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("DEFAULT_MCP_ENABLED", "default_mcp_enabled"),
-    )
-    default_time_timezone: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("DEFAULT_TIME_TIMEZONE", "default_time_timezone"),
-    )
+    mcp_proxy_url_suffix: str = "mcp"
+    default_mcp_enabled: bool = True
+    default_time_timezone: str | None = None
 
     live_context_enabled: bool = True
     weather_city: str | None = None
@@ -111,7 +85,8 @@ class Settings(BaseSettings):
     voice_sample_rate: int = 16000
     voice_chunk_ms: int = 80
     voice_input_device: str | None = None
-    voice_wake_model_path: str = "assets/wakeword/beemboy.onnx"
+    voice_wake_model_path: str = "assets/wakeword/hey_bmo.onnx"
+    voice_wake_phrase: str = "hey bmo"
     voice_wake_threshold: float = 0.52
     voice_wake_trigger_level: int = 2
     voice_wake_refractory_s: float = 1.2
@@ -280,4 +255,11 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings_path = pathlib.Path("config/settings.json")
+    if not settings_path.is_file():
+        return Settings()
+    with settings_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("config/settings.json must contain a JSON object")
+    return Settings.model_validate(data)

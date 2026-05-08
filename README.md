@@ -16,7 +16,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Copy `.env.example` to `.env` and adjust.
+Edit `config/settings.json` and adjust.
 
 ## Run
 
@@ -74,7 +74,7 @@ Token estimation is intentionally lightweight and offline-friendly (`~1 token pe
 
 Beemboy now includes a local voice pipeline in `src/beemboy/voice/`:
 
-- **Wake word:** ONNX wake model for "Beemboy" (`OnnxWakeWordDetector`)
+- **Wake word:** ONNX wake model for "hey bmo" (`OnnxWakeWordDetector`)
 - **STT:** `whisper.cpp` CLI (`whisper-cli`)
 - **TTS:** Piper CLI (`piper`)
 - **Conversational follow-up:** short post-response listening window (no wake word needed)
@@ -93,20 +93,23 @@ Beemboy now includes a local voice pipeline in `src/beemboy/voice/`:
   - `whisper-cli` (from [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp))
   - `piper` (from [`rhasspy/piper`](https://github.com/rhasspy/piper))
 - Local models:
-  - wake model (already in repo): `assets/wakeword/beemboy.onnx`
+  - wake model: `assets/wakeword/hey_bmo.onnx`
   - whisper model: `models/ggml-base.en.bin`
   - piper model: `models/en_US-lessac-medium.onnx`
 
 ### Voice configuration (minimal)
 
-Set the main paths/thresholds in `.env`:
+Set the main paths/thresholds in `config/settings.json`:
 
-```bash
-VOICE_WAKE_MODEL_PATH=assets/wakeword/beemboy.onnx
-VOICE_WAKE_THRESHOLD=0.52
-VOICE_WHISPER_MODEL_PATH=models/ggml-base.en.bin
-VOICE_PIPER_MODEL_PATH=models/en_US-lessac-medium.onnx
-VOICE_FOLLOWUP_SECONDS=3.5
+```json
+{
+  "voice_wake_model_path": "assets/wakeword/hey_bmo.onnx",
+  "voice_wake_phrase": "hey bmo",
+  "voice_wake_threshold": 0.52,
+  "voice_whisper_model_path": "models/ggml-base.en.bin",
+  "voice_piper_model_path": "models/en_US-lessac-medium.onnx",
+  "voice_followup_seconds": 3.5
+}
 ```
 
 Optional knobs are available for mic device, silence detection, and playback command, but defaults are tuned for low-friction Pi usage.
@@ -125,7 +128,7 @@ beemboy voice --telemetry
 
 ## Configuration
 
-See `.env.example` for `LLAMA_*`, `BRAVE_*`, optional `MCP_SERVERS` JSON, live-context options, and **`STREAM_RESPONSES`** (token streaming to the terminal while the model generates).
+See `config/settings.json` for LLM, MCP, live-context options, and response streaming settings.
 
 Phase 1 adds:
 
