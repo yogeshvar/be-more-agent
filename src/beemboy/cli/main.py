@@ -63,11 +63,16 @@ async def _chat_loop(settings: Settings) -> None:
         llm = LlamaServerBackend(settings)
         orch = AgentOrchestrator(settings, llm, mcp)
         history: list[dict] = []
+        tool_names = ", ".join(t.openai_name for t in mcp.tools[:8])
+        if len(mcp.tools) > 8:
+            tool_names += ", ..."
         typer.secho(
             f"Beemboy — model={settings.llama_model} tools={len(mcp.tools)}. "
             "Commands: /quit /exit",
             fg=typer.colors.GREEN,
         )
+        if mcp.tools:
+            typer.secho(f"MCP tools loaded: {tool_names}", dim=True, err=True)
         while True:
             try:
                 line = await asyncio.to_thread(input, "> ")
@@ -84,15 +89,24 @@ async def _chat_loop(settings: Settings) -> None:
                         print(file=sys.stdout)
                         typer.secho("Using tools…", dim=True, err=True)
 
+                    def _on_tool_call(name: str, args_json: str) -> None:
+                        preview = args_json if len(args_json) <= 180 else args_json[:177] + "..."
+                        typer.secho(f"[MCP] {name} {preview}", fg=typer.colors.CYAN, err=True)
+
                     history, reply = await orch.run_turn(
                         history,
                         line,
                         on_text_delta=lambda s: print(s, end="", flush=True),
                         on_tool_round_start=_on_tool_phase,
+                        on_tool_call=_on_tool_call,
                     )
                     print()
                 else:
-                    history, reply = await orch.run_turn(history, line)
+                    def _on_tool_call_no_stream(name: str, args_json: str) -> None:
+                        preview = args_json if len(args_json) <= 180 else args_json[:177] + "..."
+                        typer.secho(f"[MCP] {name} {preview}", fg=typer.colors.CYAN, err=True)
+
+                    history, reply = await orch.run_turn(history, line, on_tool_call=_on_tool_call_no_stream)
                     print(reply)
             except Exception as e:
                 log.exception("chat.turn_failed", error=str(e))

@@ -65,6 +65,7 @@ class AgentOrchestrator:
         *,
         on_text_delta: Callable[[str], None] | None = None,
         on_tool_round_start: Callable[[], None] | None = None,
+        on_tool_call: Callable[[str, str], None] | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.build_system_prompt()},
@@ -103,6 +104,8 @@ class AgentOrchestrator:
                     fn = tc.get("function") or {}
                     name = fn.get("name") or ""
                     args = fn.get("arguments") or "{}"
+                    if on_tool_call:
+                        on_tool_call(name, args)
                     out = await self._mcp.invoke(name, args)
                     messages.append(
                         {

@@ -57,4 +57,3 @@ nohup "$LLAMA_SERVER_BIN" \
 echo "    pid: $!"
 
 echo "==> Tail logs with: tail -f $LLAMA_LOG"
-echo "==> Start Beemboy with: $VENV_DIR/bin/beemboy"
