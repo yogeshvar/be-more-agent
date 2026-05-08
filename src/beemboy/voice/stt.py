@@ -31,12 +31,19 @@ class WhisperCppSTT:
             output_prefix,
             "--no-timestamps",
         ]
-        proc = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"whisper binary '{self._config.binary}' was not found on PATH. "
+                "Install/compile whisper.cpp and either add `whisper-cli` to PATH "
+                "or set VOICE_WHISPER_BINARY to its absolute path."
+            ) from exc
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
             raise RuntimeError(f"whisper-cli failed ({proc.returncode}): {stderr}")

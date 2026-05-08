@@ -51,9 +51,22 @@ class PiperTTS:
         with NamedTemporaryFile(prefix="beemboy_tts_", suffix=".wav", delete=False) as tmp:
             wav_path = Path(tmp.name)
         try:
-            self.synthesize_to_wav(cleaned, str(wav_path))
+            try:
+                self.synthesize_to_wav(cleaned, str(wav_path))
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    f"piper binary '{self._config.binary}' was not found on PATH. "
+                    "Install piper and either add it to PATH or set VOICE_PIPER_BINARY "
+                    "to its absolute path."
+                ) from exc
             player = self._resolve_player()
-            proc = subprocess.run([*player, str(wav_path)], check=False, capture_output=True, text=True)
+            try:
+                proc = subprocess.run([*player, str(wav_path)], check=False, capture_output=True, text=True)
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    f"Audio playback command '{' '.join(player)}' was not found. "
+                    "Install a player (for example `aplay`) or set VOICE_PLAYBACK_COMMAND."
+                ) from exc
             if proc.returncode != 0:
                 stderr = (proc.stderr or "").strip()
                 raise RuntimeError(f"audio playback failed ({proc.returncode}): {stderr}")
