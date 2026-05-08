@@ -78,8 +78,22 @@ async def _chat_loop(settings: Settings) -> None:
             if line.strip() in {"/quit", "/exit", "exit"}:
                 break
             try:
-                history, reply = await orch.run_turn(history, line)
-                print(reply)
+                if settings.stream_responses:
+
+                    def _on_tool_phase() -> None:
+                        print(file=sys.stdout)
+                        typer.secho("Using tools…", dim=True, err=True)
+
+                    history, reply = await orch.run_turn(
+                        history,
+                        line,
+                        on_text_delta=lambda s: print(s, end="", flush=True),
+                        on_tool_round_start=_on_tool_phase,
+                    )
+                    print()
+                else:
+                    history, reply = await orch.run_turn(history, line)
+                    print(reply)
             except Exception as e:
                 log.exception("chat.turn_failed", error=str(e))
                 typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)

@@ -30,4 +30,4 @@ Copy `.env.example` to `.env` and adjust.
 
 ## Configuration
 
-See `.env.example` for `LLAMA_*`, `BRAVE_*`, optional `MCP_SERVERS` JSON, and live-context options.
+See `.env.example` for `LLAMA_*`, `BRAVE_*`, optional `MCP_SERVERS` JSON, live-context options, and **`STREAM_RESPONSES`** (token streaming to the terminal while the model generates).

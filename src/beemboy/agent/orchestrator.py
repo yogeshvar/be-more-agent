@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -12,8 +13,8 @@ from beemboy.mcp.bundle import MCPBundle
 log = structlog.get_logger(__name__)
 
 
-def _assistant_message_dict(msg: Any) -> dict[str, Any]:
-    d: dict[str, Any] = {"role": "assistant", "content": msg.content}
+def _completion_assistant_as_dict(msg: Any) -> dict[str, Any]:
+    d: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
     if msg.tool_calls:
         d["tool_calls"] = [
             {
@@ -61,6 +62,9 @@ class AgentOrchestrator:
         self,
         history: list[dict[str, Any]],
         user_text: str,
+        *,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_tool_round_start: Callable[[], None] | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.build_system_prompt()},
@@ -71,33 +75,45 @@ class AgentOrchestrator:
 
         for round_i in range(self._settings.max_tool_rounds):
             log.debug("agent.llm_round", round=round_i, num_tools=len(self._mcp.tools))
-            resp = await self._llm.chat(
-                messages,
-                tools=tools_payload if tools_payload else None,
-            )
-            msg = resp.choices[0].message
+            if self._settings.stream_responses:
+                assistant = await self._llm.stream_complete(
+                    messages,
+                    tools=tools_payload if tools_payload else None,
+                    on_text_delta=on_text_delta,
+                )
+            else:
+                resp = await self._llm.chat(
+                    messages,
+                    tools=tools_payload if tools_payload else None,
+                )
+                assistant = _completion_assistant_as_dict(resp.choices[0].message)
 
-            if msg.tool_calls:
+            tool_calls = assistant.get("tool_calls")
+            if tool_calls:
                 if not self._mcp.tools:
                     log.warning("agent.unexpected_tool_calls", round=round_i)
                     return (
                         history + [{"role": "user", "content": user_text}],
                         "Model requested tools but no MCP servers are connected.",
                     )
-                messages.append(_assistant_message_dict(msg))
-                for tc in msg.tool_calls:
-                    args = tc.function.arguments or "{}"
-                    out = await self._mcp.invoke(tc.function.name, args)
+                if on_tool_round_start:
+                    on_tool_round_start()
+                messages.append(assistant)
+                for tc in tool_calls:
+                    fn = tc.get("function") or {}
+                    name = fn.get("name") or ""
+                    args = fn.get("arguments") or "{}"
+                    out = await self._mcp.invoke(name, args)
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tc.id,
+                            "tool_call_id": tc.get("id", ""),
                             "content": out,
                         }
                     )
                 continue
 
-            text = (msg.content or "").strip()
+            text = (assistant.get("content") or "").strip()
             messages.append({"role": "assistant", "content": text})
             new_history = messages[1:]
             return new_history, text

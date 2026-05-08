@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     temperature: float = 0.7
     max_tool_rounds: int = 16
     request_timeout_s: float = 120.0
+    stream_responses: bool = True
 
     brave_api_key: str | None = None
     brave_mcp_enabled: bool = True
