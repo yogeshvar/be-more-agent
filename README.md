@@ -32,6 +32,14 @@ Copy `.env.example` to `.env` and adjust.
 
 See `.env.example` for `LLAMA_*`, `BRAVE_*`, optional `MCP_SERVERS` JSON, live-context options, and **`STREAM_RESPONSES`** (token streaming to the terminal while the model generates).
 
+By default, if you provide no MCP configuration, Beemboy auto-enables a built-in MCP trio via `uvx`:
+
+- `time` (`mcp-server-time`)
+- `fetch` (`mcp-server-fetch`)
+- `ddg-search` (`duckduckgo-mcp-server`)
+
+You can disable this fallback with `DEFAULT_MCP_ENABLED=false`. If you want a specific timezone for the time server, set `DEFAULT_TIME_TIMEZONE`.
+
 ## MCP in the llama-server Web UI (`mcp-proxy`)
 
 This flow is for the **llama-server built-in Web UI**, which can talk to MCP servers through a small proxy.

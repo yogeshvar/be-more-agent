@@ -82,6 +82,14 @@ class Settings(BaseSettings):
         default="mcp",
         validation_alias=AliasChoices("MCP_PROXY_URL_SUFFIX", "mcp_proxy_url_suffix"),
     )
+    default_mcp_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("DEFAULT_MCP_ENABLED", "default_mcp_enabled"),
+    )
+    default_time_timezone: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DEFAULT_TIME_TIMEZONE", "default_time_timezone"),
+    )
 
     live_context_enabled: bool = True
     weather_city: str | None = None
@@ -190,6 +198,19 @@ class Settings(BaseSettings):
             env={"BRAVE_API_KEY": key},
         )
 
+    def _default_stdio_servers(self) -> list[StdioMCPServer]:
+        if not self.default_mcp_enabled:
+            return []
+        time_args = ["mcp-server-time"]
+        tz = (self.default_time_timezone or "").strip()
+        if tz:
+            time_args.append(f"--local-timezone={tz}")
+        return [
+            StdioMCPServer(id="time", command="uvx", args=time_args),
+            StdioMCPServer(id="fetch", command="uvx", args=["mcp-server-fetch"]),
+            StdioMCPServer(id="ddg-search", command="uvx", args=["duckduckgo-mcp-server"]),
+        ]
+
     def resolved_mcp_servers(self) -> list[StdioMCPServer | HttpMCPServer]:
         by_id: dict[str, StdioMCPServer | HttpMCPServer] = {}
 
@@ -203,6 +224,9 @@ class Settings(BaseSettings):
             put(s)
         for s in self._parse_extra_mcp_servers():
             put(s)
+        if not by_id:
+            for s in self._default_stdio_servers():
+                put(s)
         return list(by_id.values())
 
 
