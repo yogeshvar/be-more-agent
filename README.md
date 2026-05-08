@@ -93,7 +93,7 @@ Beemboy now includes a local voice pipeline in `src/beemboy/voice/`:
   - `whisper-cli` (from [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp))
   - `piper` (from [`rhasspy/piper`](https://github.com/rhasspy/piper))
 - Local models:
-  - wake model: `models/beemboy_wake.onnx`
+  - wake model (already in repo): `assets/wakeword/beemboy.onnx`
   - whisper model: `models/ggml-base.en.bin`
   - piper model: `models/en_US-lessac-medium.onnx`
 
@@ -102,7 +102,7 @@ Beemboy now includes a local voice pipeline in `src/beemboy/voice/`:
 Set the main paths/thresholds in `.env`:
 
 ```bash
-VOICE_WAKE_MODEL_PATH=models/beemboy_wake.onnx
+VOICE_WAKE_MODEL_PATH=assets/wakeword/beemboy.onnx
 VOICE_WAKE_THRESHOLD=0.52
 VOICE_WHISPER_MODEL_PATH=models/ggml-base.en.bin
 VOICE_PIPER_MODEL_PATH=models/en_US-lessac-medium.onnx

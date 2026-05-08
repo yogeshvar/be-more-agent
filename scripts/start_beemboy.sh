@@ -12,6 +12,11 @@ LLAMA_LOG="${LLAMA_LOG:-/tmp/llama-server.log}"
 # Repository root (one level above this script directory).
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$REPO_ROOT/.venv}"
+VOICE_MODELS_DIR="${VOICE_MODELS_DIR:-$REPO_ROOT/models}"
+WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$VOICE_MODELS_DIR/ggml-base.en.bin}"
+PIPER_MODEL_PATH="${PIPER_MODEL_PATH:-$VOICE_MODELS_DIR/en_US-lessac-medium.onnx}"
+WHISPER_MODEL_URL="${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin}"
+PIPER_MODEL_URL="${PIPER_MODEL_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx}"
 
 if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
   echo "ERROR: llama-server not executable at: $LLAMA_SERVER_BIN"
@@ -31,6 +36,21 @@ fi
 echo "==> Upgrading pip and reinstalling Beemboy editable package"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/pip" install -e "$REPO_ROOT"
+
+echo "==> Ensuring voice model directory at $VOICE_MODELS_DIR"
+mkdir -p "$VOICE_MODELS_DIR"
+if [[ ! -f "$WHISPER_MODEL_PATH" ]]; then
+  echo "==> Downloading whisper model to $WHISPER_MODEL_PATH"
+  curl -L --fail --retry 3 -o "$WHISPER_MODEL_PATH" "$WHISPER_MODEL_URL"
+else
+  echo "==> Whisper model already present: $WHISPER_MODEL_PATH"
+fi
+if [[ ! -f "$PIPER_MODEL_PATH" ]]; then
+  echo "==> Downloading piper model to $PIPER_MODEL_PATH"
+  curl -L --fail --retry 3 -o "$PIPER_MODEL_PATH" "$PIPER_MODEL_URL"
+else
+  echo "==> Piper model already present: $PIPER_MODEL_PATH"
+fi
 
 echo "==> Clearing port $PORT if occupied"
 pids="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"

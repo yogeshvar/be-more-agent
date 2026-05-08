@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     voice_sample_rate: int = 16000
     voice_chunk_ms: int = 80
     voice_input_device: str | None = None
-    voice_wake_model_path: str = "models/beemboy_wake.onnx"
+    voice_wake_model_path: str = "assets/wakeword/beemboy.onnx"
     voice_wake_threshold: float = 0.52
     voice_wake_trigger_level: int = 2
     voice_wake_refractory_s: float = 1.2
