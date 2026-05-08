@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 from tempfile import NamedTemporaryFile
 
@@ -23,6 +24,9 @@ class PiperTTS:
     def _resolve_player(self) -> list[str]:
         if self._config.playback_command:
             return shlex.split(self._config.playback_command)
+        for cmd in ("pw-play", "paplay", "aplay"):
+            if shutil.which(cmd):
+                return [cmd]
         return ["aplay"]
 
     def synthesize_to_wav(self, text: str, wav_path: str) -> None:
@@ -67,6 +71,10 @@ class PiperTTS:
                     f"Audio playback command '{' '.join(player)}' was not found. "
                     "Install a player (for example `aplay`) or set VOICE_PLAYBACK_COMMAND."
                 ) from exc
+            if proc.returncode != 0 and (not self._config.playback_command) and player and player[0] != "aplay":
+                # PipeWire/Pulse fallback to ALSA can help on systems with mixed audio stacks.
+                if shutil.which("aplay"):
+                    proc = subprocess.run(["aplay", str(wav_path)], check=False, capture_output=True, text=True)
             if proc.returncode != 0:
                 stderr = (proc.stderr or "").strip()
                 raise RuntimeError(f"audio playback failed ({proc.returncode}): {stderr}")
