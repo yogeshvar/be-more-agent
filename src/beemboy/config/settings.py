@@ -91,11 +91,11 @@ class Settings(BaseModel):
     voice_wake_threshold: float = 0.52
     voice_wake_trigger_level: int = 2
     voice_wake_refractory_s: float = 1.2
-    voice_post_wake_timeout_s: float = 2.8
+    voice_post_wake_timeout_s: float = 6.0
     voice_max_utterance_seconds: float = 8.0
-    voice_silence_seconds: float = 0.9
-    voice_energy_threshold: float = 0.015
-    voice_followup_seconds: float = 3.5
+    voice_silence_seconds: float = 1.25
+    voice_energy_threshold: float = 0.01
+    voice_followup_seconds: float = 5.0
     voice_whisper_binary: str = "whisper-cli"
     voice_whisper_model_path: str = "models/ggml-base.en.bin"
     voice_piper_binary: str = "piper"

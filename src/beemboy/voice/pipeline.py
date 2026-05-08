@@ -66,6 +66,25 @@ class VoiceAssistantLoop:
         if self._events.on_status:
             self._events.on_status(text)
 
+    @staticmethod
+    def _is_non_content_transcript(text: str) -> bool:
+        normalized = " ".join(text.strip().lower().split())
+        if not normalized:
+            return True
+        placeholder_tokens = {
+            "[blank_audio]",
+            "[inaudible]",
+            "[silence]",
+            "(silence)",
+            "<silence>",
+        }
+        if normalized in placeholder_tokens:
+            return True
+        parts = normalized.split(" ")
+        if parts and all(part in placeholder_tokens for part in parts):
+            return True
+        return False
+
     async def _audio_to_text(self, pcm16_audio: bytes) -> tuple[str, float]:
         with NamedTemporaryFile(prefix="beemboy_user_", suffix=".wav", delete=True) as tmp:
             write_pcm16_wav(tmp.name, pcm16_audio, sample_rate=self._settings.voice_sample_rate)
@@ -124,7 +143,7 @@ class VoiceAssistantLoop:
                     transcript, stt_latency_ms = await self._audio_to_text(user_audio)
                     voice_telemetry.stt_latency_ms = stt_latency_ms
                     voice_telemetry.user_audio_ms = ((perf_counter() - stt_started) * 1000) - stt_latency_ms
-                    if not transcript:
+                    if self._is_non_content_transcript(transcript):
                         self._emit_status("Didn't catch that.")
                         break
 
