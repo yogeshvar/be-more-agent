@@ -66,6 +66,7 @@ class Settings(BaseModel):
     default_time_timezone: str | None = None
 
     live_context_enabled: bool = True
+    live_context_ttl_s: int = 300
     weather_city: str | None = None
     weather_lat: str | None = None
     weather_lon: str | None = None

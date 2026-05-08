@@ -241,6 +241,25 @@ class AgentOrchestrator:
         )
         return any(k in text for k in explicit_requests)
 
+    @staticmethod
+    def _needs_fresh_data(user_text: str) -> bool:
+        text = user_text.strip().lower()
+        freshness_signals = (
+            "latest",
+            "current",
+            "right now",
+            "today",
+            "now",
+            "news",
+            "headline",
+            "headlines",
+            "breaking",
+            "internet",
+            "web",
+            "online",
+        )
+        return any(k in text for k in freshness_signals)
+
     def _find_tool_name(self, suffix: str) -> str | None:
         for t in self._mcp.tools:
             if t.openai_name.endswith(suffix):
@@ -390,22 +409,26 @@ class AgentOrchestrator:
         messages.extend(recent_history)
         messages.append({"role": "user", "content": user_text})
         tools_payload = [t.to_openai() for t in self._mcp.tools] if self._mcp.tools else None
+        force_tool_first_round = bool(tools_payload and self._needs_fresh_data(user_text))
         telemetry.prep_latency_ms = (perf_counter() - turn_start) * 1000
         for round_i in range(self._settings.max_tool_rounds):
             log.debug("agent.llm_round", round=round_i, num_tools=len(self._mcp.tools))
             round_input_chars = estimate_message_chars(messages)
             round_input_tokens = estimate_message_tokens(messages)
             llm_start = perf_counter()
+            tool_choice: str | dict[str, Any] | None = "required" if (force_tool_first_round and round_i == 0) else None
             if self._settings.stream_responses:
                 assistant = await self._llm.stream_complete(
                     messages,
                     tools=tools_payload if tools_payload else None,
+                    tool_choice=tool_choice,
                     on_text_delta=on_text_delta,
                 )
             else:
                 resp = await self._llm.chat(
                     messages,
                     tools=tools_payload if tools_payload else None,
+                    tool_choice=tool_choice,
                 )
                 assistant = _completion_assistant_as_dict(resp.choices[0].message)
             llm_latency_ms = (perf_counter() - llm_start) * 1000
@@ -464,11 +487,8 @@ class AgentOrchestrator:
                 continue
 
             # Safety fallback for explicit command-style tool requests.
-            if (
-                round_i == 0
-                and self._is_explicit_tool_command(user_text)
-                and tools_payload
-                and not tool_calls
+            if round_i == 0 and tools_payload and not tool_calls and (
+                self._is_explicit_tool_command(user_text) or self._needs_fresh_data(user_text)
             ):
                 fallback_msgs = await self._heuristic_tool_fallback(
                     user_text,

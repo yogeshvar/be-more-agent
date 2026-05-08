@@ -18,6 +18,7 @@
   "default_mcp_enabled": true,
   "default_time_timezone": null,
   "live_context_enabled": true,
+  "live_context_ttl_s": 300,
   "weather_city": null,
   "weather_lat": null,
   "weather_lon": null,
