@@ -8,7 +8,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from beemboy.config.settings import get_settings
-from beemboy.vision.detector import FaceDetector
+from beemboy.vision.detector import DetectedFace, FaceDetector
 from beemboy.vision.embedder import FaceEmbedder
 from beemboy.vision.registry import FaceRegistry
 from beemboy.voice.tts import PiperTTS, PiperTTSConfig
@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to an image containing your face for identity check/enrollment.",
     )
+    parser.add_argument(
+        "--show-face-preview",
+        action="store_true",
+        help="Show a display window with face detection status before chat starts.",
+    )
     return parser
 
 
@@ -57,7 +62,46 @@ def _opening_question(name: str) -> str:
     return random.choice(prompts)
 
 
-def _bootstrap_identity(face_image_path: str, *, settings, tts: PiperTTS, no_voice: bool) -> str:
+def _show_face_preview(image_bytes: bytes, faces: list[DetectedFace], status: str) -> None:
+    try:
+        import cv2  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception:
+        print("Face preview unavailable: install OpenCV + numpy to display detection window.")
+        return
+
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        print("Face preview unavailable: unable to decode image.")
+        return
+
+    color = (0, 200, 0) if status.lower().startswith("recognized") else (0, 165, 255)
+    if "no face" in status.lower():
+        color = (0, 0, 255)
+    for face in faces:
+        cv2.rectangle(
+            frame,
+            (face.left, face.top),
+            (face.left + face.width, face.top + face.height),
+            color,
+            2,
+        )
+    cv2.putText(frame, status, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2, cv2.LINE_AA)
+    cv2.imshow("Beemboy Face Detection", frame)
+    print("Face preview shown. Press any key in the preview window to continue.")
+    cv2.waitKey(0)
+    cv2.destroyWindow("Beemboy Face Detection")
+
+
+def _bootstrap_identity(
+    face_image_path: str,
+    *,
+    settings,
+    tts: PiperTTS,
+    no_voice: bool,
+    show_preview: bool,
+) -> str:
     image_path = Path(face_image_path).expanduser()
     if not image_path.is_file():
         raise FileNotFoundError(f"Face image not found: {image_path}")
@@ -72,6 +116,8 @@ def _bootstrap_identity(face_image_path: str, *, settings, tts: PiperTTS, no_voi
 
     faces = detector.detect(image_bytes)
     if not faces:
+        if show_preview:
+            _show_face_preview(image_bytes, [], "No face detected")
         raise RuntimeError(
             "No face detected. Make sure OpenCV is installed and the image has a clear frontal face."
         )
@@ -81,10 +127,14 @@ def _bootstrap_identity(face_image_path: str, *, settings, tts: PiperTTS, no_voi
 
     match = registry.match(embedding, threshold=settings.camera_match_threshold)
     if match.matched and match.name:
+        if show_preview:
+            _show_face_preview(image_bytes, faces, f"Recognized: {match.name}")
         opener = _opening_question(match.name)
         _say(opener, tts=tts, no_voice=no_voice)
         return match.name
 
+    if show_preview:
+        _show_face_preview(image_bytes, faces, "Unknown face")
     _say("I don't recognize you yet. Who are you?", tts=tts, no_voice=no_voice)
     name = input("You (name): ").strip() or "Friend"
     enrolled = registry.enroll(name=name, embedding=embedding)
@@ -117,6 +167,7 @@ def main() -> int:
                 settings=settings,
                 tts=tts,
                 no_voice=args.no_voice,
+                show_preview=args.show_face_preview,
             )
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             print(f"Identity setup error: {exc}")
