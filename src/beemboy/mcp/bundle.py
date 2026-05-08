@@ -8,6 +8,7 @@ from typing import Any
 
 import structlog
 from mcp import ClientSession
+from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
@@ -66,8 +67,12 @@ class MCPBundle:
                     read_write = await stack.enter_async_context(stdio_client(params))
                     read, write = read_write
                 else:
-                    conn = await stack.enter_async_context(streamable_http_client(cfg.url))
-                    read, write, _session_cb = conn
+                    if cfg.http_mode == "sse":
+                        read_write = await stack.enter_async_context(sse_client(cfg.url))
+                        read, write = read_write
+                    else:
+                        conn = await stack.enter_async_context(streamable_http_client(cfg.url))
+                        read, write, _session_cb = conn
 
                 sess_cm = ClientSession(read, write)
                 session = await stack.enter_async_context(sess_cm)

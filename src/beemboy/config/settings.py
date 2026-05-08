@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import shlex
 from functools import lru_cache
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +27,8 @@ class HttpMCPServer(BaseModel):
     id: str
     transport: Literal["http"] = "http"
     url: str
+    #: ``streamable`` for ``/mcp`` (Streamable HTTP); ``sse`` for legacy ``/sse`` endpoints.
+    http_mode: Literal["streamable", "sse"] = "streamable"
 
 
 MCPServerDefinition = Annotated[StdioMCPServer | HttpMCPServer, Field(discriminator="transport")]
@@ -53,7 +57,31 @@ class Settings(BaseSettings):
         description="Override: shell-style args after npx, e.g. '-y @modelcontextprotocol/server-brave-search'",
     )
 
-    mcp_servers: str | None = Field(default=None, validation_alias="MCP_SERVERS")
+    mcp_servers: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MCP_SERVERS", "mcp_servers"),
+    )
+
+    #: Same layout as ``mcp-proxy --named-server-config``: base URL, e.g. ``http://127.0.0.1:8001``
+    mcp_proxy_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MCP_PROXY_BASE_URL", "mcp_proxy_base_url"),
+    )
+    #: Path to JSON with top-level ``mcpServers`` object (keys = server names for URL paths).
+    mcp_proxy_config_path: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MCP_PROXY_CONFIG", "mcp_proxy_config_path"),
+    )
+    #: Comma-separated server names (same as keys in ``mcpServers``), optional if config path is set.
+    mcp_proxy_servers: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MCP_PROXY_SERVERS", "mcp_proxy_servers"),
+    )
+    #: Path segment after server name: usually ``mcp`` (Streamable HTTP); use ``sse`` if needed.
+    mcp_proxy_url_suffix: str = Field(
+        default="mcp",
+        validation_alias=AliasChoices("MCP_PROXY_URL_SUFFIX", "mcp_proxy_url_suffix"),
+    )
 
     live_context_enabled: bool = True
     weather_city: str | None = None
@@ -65,12 +93,65 @@ class Settings(BaseSettings):
     news_country: str = "us"
     news_rss_urls: str | None = None
 
-    @field_validator("mcp_servers", mode="before")
+    @field_validator(
+        "mcp_servers",
+        "mcp_proxy_base_url",
+        "mcp_proxy_config_path",
+        "mcp_proxy_servers",
+        mode="before",
+    )
     @classmethod
     def _empty_str_none(cls, v: Any) -> Any:
         if v == "":
             return None
         return v
+
+    def _names_from_mcp_proxy_config(self, path: str) -> list[str]:
+        p = pathlib.Path(path).expanduser()
+        if not p.is_file():
+            raise ValueError(f"MCP_PROXY_CONFIG is not a file: {p}")
+        with p.open(encoding="utf-8") as f:
+            data = json.load(f)
+        servers = data.get("mcpServers")
+        if servers is None:
+            raise ValueError("MCP proxy config must contain an 'mcpServers' object")
+        if not isinstance(servers, dict):
+            raise ValueError("'mcpServers' must be a JSON object")
+        return list(servers.keys())
+
+    def _mcp_proxy_http_servers(self) -> list[HttpMCPServer]:
+        base = (self.mcp_proxy_base_url or "").strip().rstrip("/")
+        if not base:
+            return []
+
+        names: list[str] = []
+        cfg_path = (self.mcp_proxy_config_path or "").strip()
+        if cfg_path:
+            names.extend(self._names_from_mcp_proxy_config(cfg_path))
+        extra = (self.mcp_proxy_servers or "").strip()
+        if extra:
+            names.extend(part.strip() for part in extra.split(",") if part.strip())
+
+        seen: set[str] = set()
+        unique: list[str] = []
+        for n in names:
+            if n in seen:
+                continue
+            seen.add(n)
+            unique.append(n)
+
+        if not unique:
+            return []
+
+        suffix = (self.mcp_proxy_url_suffix or "mcp").strip().strip("/")
+        http_mode: Literal["streamable", "sse"] = "sse" if suffix == "sse" else "streamable"
+
+        out: list[HttpMCPServer] = []
+        for n in unique:
+            path_seg = quote(n, safe="")
+            url = f"{base}/servers/{path_seg}/{suffix}"
+            out.append(HttpMCPServer(id=n, url=url, http_mode=http_mode))
+        return out
 
     def _parse_extra_mcp_servers(self) -> list[StdioMCPServer | HttpMCPServer]:
         if not self.mcp_servers:
@@ -84,7 +165,12 @@ class Settings(BaseSettings):
                 raise ValueError(f"MCP_SERVERS[{i}] must be an object")
             t = item.get("transport", "stdio")
             if t == "http":
-                out.append(HttpMCPServer.model_validate(item))
+                it = dict(item)
+                if it.get("http_mode") is None and isinstance(it.get("url"), str):
+                    u = it["url"].rstrip("/")
+                    if u.endswith("/sse"):
+                        it["http_mode"] = "sse"
+                out.append(HttpMCPServer.model_validate(it))
             else:
                 out.append(StdioMCPServer.model_validate(item))
         return out
@@ -105,12 +191,19 @@ class Settings(BaseSettings):
         )
 
     def resolved_mcp_servers(self) -> list[StdioMCPServer | HttpMCPServer]:
-        servers: list[StdioMCPServer | HttpMCPServer] = []
+        by_id: dict[str, StdioMCPServer | HttpMCPServer] = {}
+
+        def put(s: StdioMCPServer | HttpMCPServer) -> None:
+            by_id[s.id] = s
+
         brave = self._brave_stdio_server()
         if brave:
-            servers.append(brave)
-        servers.extend(self._parse_extra_mcp_servers())
-        return servers
+            put(brave)
+        for s in self._mcp_proxy_http_servers():
+            put(s)
+        for s in self._parse_extra_mcp_servers():
+            put(s)
+        return list(by_id.values())
 
 
 @lru_cache
