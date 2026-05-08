@@ -94,6 +94,68 @@ def _show_face_preview(image_bytes: bytes, faces: list[DetectedFace], status: st
     cv2.destroyWindow("Beemboy Face Detection")
 
 
+def _show_live_face_preview(settings) -> None:
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except Exception:
+        print("Live face preview unavailable: install OpenCV in your venv.")
+        return
+
+    detector = FaceDetector(
+        backend=settings.camera_detector_backend,
+        min_face_size_px=settings.camera_min_face_size_px,
+    )
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Live face preview unavailable: could not open camera index 0.")
+        return
+
+    window_name = "Beemboy Live Face Preview"
+    print("Live face preview started. Press 'q' in the preview window to continue to chat.")
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            ok_encoded, encoded = cv2.imencode(".jpg", frame)
+            image_bytes = bytes(encoded) if ok_encoded else b""
+            faces = detector.detect(image_bytes)
+
+            if faces:
+                status = f"detecting: {len(faces)} face(s)"
+                color = (0, 200, 0)
+            else:
+                status = "detecting: no face"
+                color = (0, 165, 255)
+
+            for face in faces:
+                cv2.rectangle(
+                    frame,
+                    (face.left, face.top),
+                    (face.left + face.width, face.top + face.height),
+                    color,
+                    2,
+                )
+            cv2.putText(frame, status, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2, cv2.LINE_AA)
+            cv2.putText(
+                frame,
+                "Press q to continue",
+                (12, 56),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow(window_name, frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyWindow(window_name)
+
+
 def _bootstrap_identity(
     face_image_path: str,
     *,
@@ -174,6 +236,8 @@ def main() -> int:
             return 1
         print(f"Identity ready for {person_name}.")
     else:
+        if args.show_face_preview:
+            _show_live_face_preview(settings)
         print("No --face-image provided; starting chat without identity recognition.")
 
     print("Minimal voice chat ready. Type your message and press Enter.")
