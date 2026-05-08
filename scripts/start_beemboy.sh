@@ -15,8 +15,10 @@ VENV_DIR="${VENV_DIR:-$REPO_ROOT/.venv}"
 VOICE_MODELS_DIR="${VOICE_MODELS_DIR:-$REPO_ROOT/models}"
 WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$VOICE_MODELS_DIR/ggml-base.en.bin}"
 PIPER_MODEL_PATH="${PIPER_MODEL_PATH:-$VOICE_MODELS_DIR/en_US-lessac-medium.onnx}"
+PIPER_MODEL_CONFIG_PATH="${PIPER_MODEL_CONFIG_PATH:-${PIPER_MODEL_PATH}.json}"
 WHISPER_MODEL_URL="${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin}"
 PIPER_MODEL_URL="${PIPER_MODEL_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx}"
+PIPER_MODEL_CONFIG_URL="${PIPER_MODEL_CONFIG_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json}"
 WHISPER_CPP_DIR="${WHISPER_CPP_DIR:-/home/mags/Mags/whisper.cpp}"
 WHISPER_BIN_PATH="${WHISPER_BIN_PATH:-$LLAMA_BIN_DIR/whisper-cli}"
 PIPER_BIN_PATH="${PIPER_BIN_PATH:-$VENV_DIR/bin/piper}"
@@ -67,6 +69,12 @@ if [[ ! -f "$PIPER_MODEL_PATH" ]]; then
   curl -L --fail --retry 3 -o "$PIPER_MODEL_PATH" "$PIPER_MODEL_URL"
 else
   echo "==> Piper model already present: $PIPER_MODEL_PATH"
+fi
+if [[ ! -f "$PIPER_MODEL_CONFIG_PATH" ]]; then
+  echo "==> Downloading piper model config to $PIPER_MODEL_CONFIG_PATH"
+  curl -L --fail --retry 3 -o "$PIPER_MODEL_CONFIG_PATH" "$PIPER_MODEL_CONFIG_URL"
+else
+  echo "==> Piper model config already present: $PIPER_MODEL_CONFIG_PATH"
 fi
 
 if command -v whisper-cli >/dev/null 2>&1; then
