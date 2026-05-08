@@ -19,6 +19,7 @@ WHISPER_MODEL_URL="${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper
 PIPER_MODEL_URL="${PIPER_MODEL_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx}"
 WHISPER_CPP_DIR="${WHISPER_CPP_DIR:-/home/mags/Mags/whisper.cpp}"
 WHISPER_BIN_PATH="${WHISPER_BIN_PATH:-$LLAMA_BIN_DIR/whisper-cli}"
+PIPER_BIN_PATH="${PIPER_BIN_PATH:-$VENV_DIR/bin/piper}"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 
 set_env_kv() {
@@ -94,8 +95,25 @@ else
   fi
 fi
 
+if command -v piper >/dev/null 2>&1; then
+  PIPER_BIN_PATH="$(command -v piper)"
+  echo "==> Found piper on PATH: $PIPER_BIN_PATH"
+elif [[ -x "$PIPER_BIN_PATH" ]]; then
+  echo "==> Found piper at: $PIPER_BIN_PATH"
+else
+  echo "==> piper not found; installing piper-tts into virtualenv"
+  "$VENV_DIR/bin/pip" install --upgrade piper-tts
+  if [[ -x "$VENV_DIR/bin/piper" ]]; then
+    PIPER_BIN_PATH="$VENV_DIR/bin/piper"
+  else
+    echo "ERROR: piper install succeeded but binary was not found at $VENV_DIR/bin/piper"
+    exit 1
+  fi
+fi
+
 echo "==> Configuring voice binaries in $ENV_FILE"
 set_env_kv "VOICE_WHISPER_BINARY" "$WHISPER_BIN_PATH"
+set_env_kv "VOICE_PIPER_BINARY" "$PIPER_BIN_PATH"
 set_env_kv "VOICE_WHISPER_MODEL_PATH" "$WHISPER_MODEL_PATH"
 set_env_kv "VOICE_PIPER_MODEL_PATH" "$PIPER_MODEL_PATH"
 
