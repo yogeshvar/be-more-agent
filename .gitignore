@@ -7,3 +7,7 @@ __pycache__/
 src/*.egg-info/
 dist/
 build/
+# Local voice model artifacts
+models/*.bin
+models/*.onnx
+models/*.tflite
