@@ -21,6 +21,7 @@ class OnnxWakeWordDetector:
         self._session: Any | None = None
         self._np: Any | None = None
         self._input_name: str | None = None
+        self._input_shape: Any | None = None
         self._consecutive_hits = 0
         self._last_trigger_time = 0.0
 
@@ -40,7 +41,24 @@ class OnnxWakeWordDetector:
         model_inputs = self._session.get_inputs()
         if not model_inputs:
             raise RuntimeError("Wake model has no inputs")
-        self._input_name = str(model_inputs[0].name)
+        model_input = model_inputs[0]
+        self._input_name = str(model_input.name)
+        self._input_shape = getattr(model_input, "shape", None)
+
+    def _prepare_model_input(self, audio_f32: Any) -> Any:
+        assert self._np is not None
+        rank = len(self._input_shape) if isinstance(self._input_shape, (list, tuple)) else 2
+        if rank <= 1:
+            return audio_f32
+        if rank == 2:
+            return self._np.expand_dims(audio_f32, axis=0)
+        if rank == 3:
+            # Most wake-word ONNX exports expect [batch, channels/features, frames].
+            return self._np.expand_dims(self._np.expand_dims(audio_f32, axis=0), axis=0)
+        shaped = audio_f32
+        for _ in range(rank - 1):
+            shaped = self._np.expand_dims(shaped, axis=0)
+        return shaped
 
     def _score_chunk(self, pcm16_chunk: bytes) -> float:
         self._ensure_loaded()
@@ -52,7 +70,7 @@ class OnnxWakeWordDetector:
         audio_f32 = self._np.frombuffer(pcm16_chunk, dtype=self._np.int16).astype(self._np.float32) / 32768.0
         if audio_f32.size == 0:
             return 0.0
-        model_in = self._np.expand_dims(audio_f32, axis=0)
+        model_in = self._prepare_model_input(audio_f32)
         outputs = self._session.run(None, {self._input_name: model_in})
         return self._extract_score(outputs)
 
