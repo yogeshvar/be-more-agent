@@ -50,13 +50,34 @@ class AgentOrchestrator:
         parts = [
             f"You are {self._settings.assistant_name}, a helpful local AI assistant. "
             "Keep replies concise and friendly. When web search tools are available, use them "
-            "for current events or facts you are unsure about, then summarize.",
+            "for current events or facts you are unsure about, then summarize. "
+            "Never claim web/news/time access unless you actually called a tool in this turn.",
         ]
         for inj in self._injectors:
             block = inj.inject(self._settings)
             if block:
                 parts.append(block)
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _should_force_tools(user_text: str) -> bool:
+        t = user_text.lower()
+        triggers = (
+            "latest news",
+            "news today",
+            "today news",
+            "current events",
+            "breaking news",
+            "what time",
+            "current time",
+            "what day",
+            "today date",
+            "fetch ",
+            "search ",
+            "look up",
+            "lookup ",
+        )
+        return any(k in t for k in triggers)
 
     async def run_turn(
         self,
@@ -73,6 +94,9 @@ class AgentOrchestrator:
             {"role": "user", "content": user_text},
         ]
         tools_payload = [t.to_openai() for t in self._mcp.tools] if self._mcp.tools else None
+        forced_tool_choice: str | dict[str, Any] | None = None
+        if tools_payload and self._should_force_tools(user_text):
+            forced_tool_choice = "required"
 
         for round_i in range(self._settings.max_tool_rounds):
             log.debug("agent.llm_round", round=round_i, num_tools=len(self._mcp.tools))
@@ -80,12 +104,14 @@ class AgentOrchestrator:
                 assistant = await self._llm.stream_complete(
                     messages,
                     tools=tools_payload if tools_payload else None,
+                    tool_choice=forced_tool_choice if round_i == 0 else None,
                     on_text_delta=on_text_delta,
                 )
             else:
                 resp = await self._llm.chat(
                     messages,
                     tools=tools_payload if tools_payload else None,
+                    tool_choice=forced_tool_choice if round_i == 0 else None,
                 )
                 assistant = _completion_assistant_as_dict(resp.choices[0].message)
 

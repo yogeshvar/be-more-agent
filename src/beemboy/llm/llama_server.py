@@ -30,6 +30,7 @@ class LlamaServerBackend:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatCompletion:
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -38,6 +39,8 @@ class LlamaServerBackend:
         }
         if tools:
             kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
         log.debug("llm.request", tool_count=len(tools or []))
         return await self._client.chat.completions.create(**kwargs)
 
@@ -45,6 +48,7 @@ class LlamaServerBackend:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         *,
         on_text_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
@@ -57,6 +61,8 @@ class LlamaServerBackend:
         }
         if tools:
             kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
         log.debug("llm.request_stream", tool_count=len(tools or []))
         stream = await self._client.chat.completions.create(**kwargs)
         return await accumulate_chat_stream(stream, on_text_delta=on_text_delta)
