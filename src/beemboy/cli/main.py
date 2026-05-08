@@ -83,6 +83,7 @@ async def _chat_loop(settings: Settings) -> None:
             if line.strip() in {"/quit", "/exit", "exit"}:
                 break
             try:
+                used_tool_this_turn = False
                 if settings.stream_responses:
 
                     def _on_tool_phase() -> None:
@@ -90,6 +91,8 @@ async def _chat_loop(settings: Settings) -> None:
                         typer.secho("Using tools…", dim=True, err=True)
 
                     def _on_tool_call(name: str, args_json: str) -> None:
+                        nonlocal used_tool_this_turn
+                        used_tool_this_turn = True
                         preview = args_json if len(args_json) <= 180 else args_json[:177] + "..."
                         typer.secho(f"[MCP] {name} {preview}", fg=typer.colors.CYAN, err=True)
 
@@ -103,11 +106,15 @@ async def _chat_loop(settings: Settings) -> None:
                     print()
                 else:
                     def _on_tool_call_no_stream(name: str, args_json: str) -> None:
+                        nonlocal used_tool_this_turn
+                        used_tool_this_turn = True
                         preview = args_json if len(args_json) <= 180 else args_json[:177] + "..."
                         typer.secho(f"[MCP] {name} {preview}", fg=typer.colors.CYAN, err=True)
 
                     history, reply = await orch.run_turn(history, line, on_tool_call=_on_tool_call_no_stream)
                     print(reply)
+                if mcp.tools and not used_tool_this_turn:
+                    typer.secho("[MCP] no tool calls this turn", dim=True, err=True)
             except Exception as e:
                 log.exception("chat.turn_failed", error=str(e))
                 typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
