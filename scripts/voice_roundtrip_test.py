@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import AsyncExitStack
 from tempfile import NamedTemporaryFile
 
 from beemboy.agent.orchestrator import AgentOrchestrator
@@ -14,6 +15,13 @@ from beemboy.voice.stt import WhisperCppSTT, WhisperSTTConfig
 from beemboy.voice.tts import PiperTTS, PiperTTSConfig
 
 
+class _NoopMCP:
+    tools: list[object] = []
+
+    async def invoke(self, openai_name: str, arguments_json: str) -> str:  # noqa: ARG002
+        return ""
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="One-shot voice roundtrip: mic -> whisper -> llama -> piper"
@@ -22,33 +30,31 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-rate", type=int, default=16000, help="Recording sample rate in Hz")
     parser.add_argument("--input-device", default=None, help="Mic device index/name override")
     parser.add_argument("--skip-tts", action="store_true", help="Print reply but skip TTS playback")
+    parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Disable MCP tools. By default MCP stays connected for the full session.",
+    )
     return parser
 
 
-async def _run(args: argparse.Namespace) -> int:
-    settings = get_settings()
+async def _run_one_turn(
+    args: argparse.Namespace,
+    *,
+    settings,
+    orch: AgentOrchestrator,
+    stt: WhisperCppSTT,
+    tts: PiperTTS,
+) -> int:
+    print("Press Enter to start recording (or type 'q' to quit)...")
+    if input().strip().lower() in {"q", "quit", "exit"}:
+        return 99
+
     audio_cfg = AudioConfig(
         sample_rate=args.sample_rate,
         block_ms=settings.voice_chunk_ms,
         input_device=args.input_device if args.input_device else settings.voice_input_device,
     )
-    stt = WhisperCppSTT(
-        WhisperSTTConfig(
-            binary=settings.voice_whisper_binary,
-            model_path=settings.voice_whisper_model_path,
-        )
-    )
-    tts = PiperTTS(
-        PiperTTSConfig(
-            binary=settings.voice_piper_binary,
-            model_path=settings.voice_piper_model_path,
-            playback_command=settings.voice_playback_command,
-        )
-    )
-
-    print("Press Enter to start recording...")
-    input()
-
     pcm_parts: list[bytes] = []
     target_frames = max(1, int(args.seconds * args.sample_rate))
     captured_frames = 0
@@ -71,15 +77,10 @@ async def _run(args: argparse.Namespace) -> int:
     transcript = transcript.strip()
     print(f"\nYou said: {transcript or '[empty]'}")
     if not transcript:
-        print("Empty transcript; stopping.")
-        return 2
+        print("Empty transcript; skipping turn.")
+        return 0
 
-    servers = settings.resolved_mcp_servers()
-    async with MCPBundle(servers) as mcp:
-        llm = LlamaServerBackend(settings)
-        orch = AgentOrchestrator(settings, llm, mcp)
-        _history, reply = await orch.run_turn([], transcript)
-
+    _history, reply = await orch.run_turn([], transcript)
     reply = (reply or "").strip()
     print(f"\nAssistant: {reply or '[empty]'}")
     if not reply:
@@ -90,6 +91,40 @@ async def _run(args: argparse.Namespace) -> int:
         await asyncio.to_thread(tts.speak, reply)
         print("Done.")
     return 0
+
+
+async def _run(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    stt = WhisperCppSTT(
+        WhisperSTTConfig(
+            binary=settings.voice_whisper_binary,
+            model_path=settings.voice_whisper_model_path,
+        )
+    )
+    tts = PiperTTS(
+        PiperTTSConfig(
+            binary=settings.voice_piper_binary,
+            model_path=settings.voice_piper_model_path,
+            playback_command=settings.voice_playback_command,
+        )
+    )
+    llm = LlamaServerBackend(settings)
+    async with AsyncExitStack() as stack:
+        if args.no_mcp:
+            mcp_client = _NoopMCP()
+            print("MCP disabled for this session.")
+        else:
+            print("Connecting MCP servers once for this session...")
+            mcp_client = await stack.enter_async_context(MCPBundle(settings.resolved_mcp_servers()))
+            print("MCP ready.")
+        orch = AgentOrchestrator(settings, llm, mcp_client)
+        while True:
+            rc = await _run_one_turn(args, settings=settings, orch=orch, stt=stt, tts=tts)
+            if rc == 99:
+                print("Bye.")
+                return 0
+            if rc != 0:
+                print(f"Turn finished with warning code {rc}.")
 
 
 def main() -> int:
