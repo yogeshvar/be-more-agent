@@ -48,12 +48,39 @@ class OnnxWakeWordDetector:
     def _prepare_model_input(self, audio_f32: Any) -> Any:
         assert self._np is not None
         rank = len(self._input_shape) if isinstance(self._input_shape, (list, tuple)) else 2
+        dims: list[int | None] = []
+        if isinstance(self._input_shape, (list, tuple)):
+            for dim in self._input_shape:
+                if isinstance(dim, int):
+                    dims.append(dim)
+                else:
+                    dims.append(None)
         if rank <= 1:
             return audio_f32
         if rank == 2:
+            expected = dims[1] if len(dims) > 1 else None
+            if expected and expected > 0:
+                flat = audio_f32
+                if flat.size < expected:
+                    pad = self._np.zeros(expected - flat.size, dtype=self._np.float32)
+                    flat = self._np.concatenate([flat, pad])
+                elif flat.size > expected:
+                    flat = flat[-expected:]
+                return self._np.expand_dims(flat, axis=0)
             return self._np.expand_dims(audio_f32, axis=0)
         if rank == 3:
-            # Most wake-word ONNX exports expect [batch, channels/features, frames].
+            # Common wake-word export path: [batch, features, frames], e.g. [1, 16, 96].
+            feature_dim = dims[1] if len(dims) > 1 else None
+            frame_dim = dims[2] if len(dims) > 2 else None
+            if feature_dim and frame_dim and feature_dim > 0 and frame_dim > 0:
+                needed = feature_dim * frame_dim
+                flat = audio_f32
+                if flat.size < needed:
+                    pad = self._np.zeros(needed - flat.size, dtype=self._np.float32)
+                    flat = self._np.concatenate([flat, pad])
+                elif flat.size > needed:
+                    flat = flat[-needed:]
+                return flat.reshape((1, feature_dim, frame_dim))
             return self._np.expand_dims(self._np.expand_dims(audio_f32, axis=0), axis=0)
         shaped = audio_f32
         for _ in range(rank - 1):
