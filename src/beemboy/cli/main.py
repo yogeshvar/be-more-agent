@@ -243,6 +243,7 @@ async def _voice_loop(settings: Settings, *, telemetry_enabled: bool = False) ->
         typer.secho(f"Invalid MCP_SERVERS or MCP config: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from e
     log = structlog.get_logger("voice")
+    loop_error: Exception | None = None
     async with MCPBundle(servers) as mcp:
         llm = LlamaServerBackend(settings)
         orch = AgentOrchestrator(settings, llm, mcp)
@@ -269,7 +270,9 @@ async def _voice_loop(settings: Settings, *, telemetry_enabled: bool = False) ->
         except Exception as e:
             log.exception("voice.loop_failed", error=str(e))
             typer.secho(f"Voice error: {e}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=1) from e
+            loop_error = e
+    if loop_error is not None:
+        raise typer.Exit(code=1) from loop_error
 
 
 def _ui_loop(settings: Settings) -> None:

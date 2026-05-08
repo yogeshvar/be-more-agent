@@ -40,6 +40,33 @@ class MicrophoneLoop:
         self._stream: Any | None = None
         self._sd: Any | None = None
 
+    def _describe_input_devices(self, sd: Any) -> str:
+        try:
+            devices = sd.query_devices()
+        except Exception:
+            return "Could not query audio devices via PortAudio."
+
+        input_rows: list[str] = []
+        for index, info in enumerate(devices):
+            try:
+                max_input_channels = int(info.get("max_input_channels", 0))
+                name = str(info.get("name", f"device-{index}")).strip() or f"device-{index}"
+            except Exception:
+                continue
+            if max_input_channels > 0:
+                input_rows.append(f"{index}: {name}")
+
+        if not input_rows:
+            return "No input devices were detected. Connect a microphone and try again."
+
+        preview = ", ".join(input_rows[:8])
+        if len(input_rows) > 8:
+            preview += ", ..."
+        return (
+            "Available input devices: "
+            f"{preview}. Set VOICE_INPUT_DEVICE to one of the device indexes above."
+        )
+
     def open(self) -> None:
         try:
             import sounddevice as sd  # type: ignore[import-not-found]
@@ -48,13 +75,19 @@ class MicrophoneLoop:
                 "sounddevice is required for voice mode. Install with: pip install sounddevice"
             ) from exc
         self._sd = sd
-        self._stream = sd.RawInputStream(
-            samplerate=self._config.sample_rate,
-            channels=1,
-            dtype="int16",
-            blocksize=self._config.frames_per_block,
-            device=self._config.input_device or None,
-        )
+        device = self._config.input_device or None
+        try:
+            self._stream = sd.RawInputStream(
+                samplerate=self._config.sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=self._config.frames_per_block,
+                device=device,
+            )
+        except Exception as exc:
+            device_text = f"configured device={device!r}" if device is not None else "default input device"
+            details = self._describe_input_devices(sd)
+            raise RuntimeError(f"Unable to open microphone ({device_text}). {details}") from exc
         self._stream.start()
 
     def close(self) -> None:
