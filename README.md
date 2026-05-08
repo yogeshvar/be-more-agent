@@ -32,6 +32,12 @@ Copy `.env.example` to `.env` and adjust.
 
 See `.env.example` for `LLAMA_*`, `BRAVE_*`, optional `MCP_SERVERS` JSON, live-context options, and **`STREAM_RESPONSES`** (token streaming to the terminal while the model generates).
 
+Phase 1 adds:
+
+- Prompt-pack files in `prompts/` loaded in fixed order (`core_persona`, `response_style`, `memory_usage`, `tool_policy`, `vision_policy`).
+- Durable local memory persisted to `MEMORY_STORE_PATH` (defaults to `.beemboy_memory.json`).
+- Internal context compression before model calls (memory block + packed older history). Disable with `CONTEXT_COMPRESSION=false`.
+
 By default, if you provide no MCP configuration, Beemboy auto-enables a built-in MCP trio via `uvx`:
 
 - `time` (`mcp-server-time`)

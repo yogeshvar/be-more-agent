@@ -100,6 +100,8 @@ class Settings(BaseSettings):
     newsapi_key: str | None = None
     news_country: str = "us"
     news_rss_urls: str | None = None
+    memory_store_path: str = ".beemboy_memory.json"
+    context_compression: bool = True
 
     @field_validator(
         "mcp_servers",
