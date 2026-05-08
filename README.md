@@ -40,6 +40,8 @@ By default, if you provide no MCP configuration, Beemboy auto-enables a built-in
 
 You can disable this fallback with `DEFAULT_MCP_ENABLED=false`. If you want a specific timezone for the time server, set `DEFAULT_TIME_TIMEZONE`.
 
+Note: this default trio requires `uvx` (from `uv`) to be installed on your system.
+
 ## MCP in the llama-server Web UI (`mcp-proxy`)
 
 This flow is for the **llama-server built-in Web UI**, which can talk to MCP servers through a small proxy.

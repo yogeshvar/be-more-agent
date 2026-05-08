@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 
 import structlog
@@ -53,6 +54,20 @@ async def _chat_loop(settings: Settings) -> None:
         typer.secho(f"Invalid MCP_SERVERS or MCP config: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from e
     log = structlog.get_logger("cli")
+    default_mcp_expected = (
+        settings.default_mcp_enabled
+        and not (settings.brave_api_key or "").strip()
+        and not (settings.mcp_servers or "").strip()
+        and not (settings.mcp_proxy_base_url or "").strip()
+    )
+    if default_mcp_expected and shutil.which("uvx") is None:
+        typer.secho(
+            "Default MCP servers are enabled, but 'uvx' is not installed. "
+            "Install uv (https://docs.astral.sh/uv/getting-started/installation/) "
+            "or set DEFAULT_MCP_ENABLED=false.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
     if not servers:
         typer.secho(
             "No MCP servers: set BRAVE_API_KEY and/or MCP_SERVERS. Chat will run without tools.",
