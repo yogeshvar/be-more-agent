@@ -102,6 +102,31 @@ class Settings(BaseSettings):
     news_rss_urls: str | None = None
     memory_store_path: str = ".beemboy_memory.json"
     context_compression: bool = True
+    camera_enabled: bool = False
+    camera_identity_store_path: str = ".beemboy_identities.json"
+    camera_match_threshold: float = 0.82
+    camera_unknown_prompt: str = "I don't recognize you yet. What's your name?"
+    camera_detector_backend: Literal["opencv", "none"] = "opencv"
+    camera_min_face_size_px: int = 80
+    voice_sample_rate: int = 16000
+    voice_chunk_ms: int = 80
+    voice_input_device: str | None = None
+    voice_wake_model_path: str = "models/beemboy_wake.onnx"
+    voice_wake_threshold: float = 0.52
+    voice_wake_trigger_level: int = 2
+    voice_wake_refractory_s: float = 1.2
+    voice_post_wake_timeout_s: float = 2.8
+    voice_max_utterance_seconds: float = 8.0
+    voice_silence_seconds: float = 0.9
+    voice_energy_threshold: float = 0.015
+    voice_followup_seconds: float = 3.5
+    voice_whisper_binary: str = "whisper-cli"
+    voice_whisper_model_path: str = "models/ggml-base.en.bin"
+    voice_piper_binary: str = "piper"
+    voice_piper_model_path: str = "models/en_US-lessac-medium.onnx"
+    voice_playback_command: str | None = None
+    ui_assets_path: str = "assets"
+    ui_poll_interval_ms: int = 120
 
     @field_validator(
         "mcp_servers",
@@ -114,6 +139,27 @@ class Settings(BaseSettings):
     def _empty_str_none(cls, v: Any) -> Any:
         if v == "":
             return None
+        return v
+
+    @field_validator("camera_match_threshold")
+    @classmethod
+    def _validate_camera_threshold(cls, v: float) -> float:
+        if v < 0 or v > 1:
+            raise ValueError("CAMERA_MATCH_THRESHOLD must be between 0 and 1")
+        return v
+
+    @field_validator("voice_wake_threshold")
+    @classmethod
+    def _validate_voice_wake_threshold(cls, v: float) -> float:
+        if v < 0 or v > 1:
+            raise ValueError("VOICE_WAKE_THRESHOLD must be between 0 and 1")
+        return v
+
+    @field_validator("ui_poll_interval_ms")
+    @classmethod
+    def _validate_ui_poll_interval_ms(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError("UI_POLL_INTERVAL_MS must be >= 30")
         return v
 
     def _names_from_mcp_proxy_config(self, path: str) -> list[str]:

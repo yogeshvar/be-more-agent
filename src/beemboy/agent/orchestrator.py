@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+from time import perf_counter
 from typing import Any
 
 import structlog
 
+from beemboy.agent.telemetry import TurnTelemetry, estimate_message_chars, estimate_message_tokens, estimate_tokens_from_text
 from beemboy.config.settings import Settings
 from beemboy.context.compression import ContextCompressor
 from beemboy.context.injectors import ClockInjector, LiveContextInjector
@@ -13,6 +15,9 @@ from beemboy.llm.llama_server import LlamaServerBackend
 from beemboy.memory.store import MemoryStore
 from beemboy.mcp.bundle import MCPBundle
 from beemboy.prompting.loader import PromptPackLoader
+from beemboy.vision.detector import FaceDetector
+from beemboy.vision.pipeline import CameraIdentityPipeline
+from beemboy.vision.registry import FaceRegistry
 
 log = structlog.get_logger(__name__)
 
@@ -50,12 +55,64 @@ class AgentOrchestrator:
         self._compressor = ContextCompressor(enabled=settings.context_compression)
         self._prompt_loader = PromptPackLoader()
         self._recognized_identity: dict[str, Any] | None = None
+        self._camera_identity: CameraIdentityPipeline | None = None
         self._injectors: list[Any] = [ClockInjector()]
         if settings.live_context_enabled:
             self._injectors.append(LiveContextInjector())
+        if settings.camera_enabled:
+            self._camera_identity = CameraIdentityPipeline(
+                registry=FaceRegistry(settings.camera_identity_store_path),
+                detector=FaceDetector(
+                    backend=settings.camera_detector_backend,
+                    min_face_size_px=settings.camera_min_face_size_px,
+                ),
+                match_threshold=settings.camera_match_threshold,
+            )
 
-    def set_recognized_identity_context(self, *, person_id: str, name: str, confidence: float) -> None:
-        """Optional hook for future camera pipeline integration."""
+    @property
+    def camera_enabled(self) -> bool:
+        return self._camera_identity is not None
+
+    def save_state(self) -> None:
+        self._memory.save()
+        if self._camera_identity:
+            self._camera_identity.save_registry()
+
+    def list_known_identities(self) -> list[dict[str, str]]:
+        by_person_id: dict[str, dict[str, str]] = {}
+        for item in self._memory.state.known_identities:
+            if not item.person_id or not item.name:
+                continue
+            by_person_id[item.person_id] = {
+                "person_id": item.person_id,
+                "name": item.name,
+                "source": "memory",
+                "last_seen_at": item.last_seen_at,
+            }
+        if self._camera_identity:
+            for rec in self._camera_identity.list_identities():
+                by_person_id[rec.person_id] = {
+                    "person_id": rec.person_id,
+                    "name": rec.name,
+                    "source": "registry",
+                    "last_seen_at": rec.last_seen_at,
+                }
+        identities = list(by_person_id.values())
+        identities.sort(key=lambda row: row.get("last_seen_at", ""), reverse=True)
+        return identities
+
+    def shutdown(self) -> None:
+        self.save_state()
+
+    def set_recognized_identity_context(
+        self,
+        *,
+        person_id: str,
+        name: str,
+        confidence: float,
+        face_embeddings_ref: str | None = None,
+    ) -> None:
+        """Current known-person context for greeting personalization."""
         if confidence < 0.75:
             self._recognized_identity = None
             return
@@ -64,7 +121,41 @@ class AgentOrchestrator:
             "name": name,
             "confidence": confidence,
         }
-        self._memory.upsert_known_identity(person_id=person_id, name=name)
+        self._memory.upsert_known_identity(
+            person_id=person_id,
+            name=name,
+            face_embeddings_ref=face_embeddings_ref,
+        )
+
+    def observe_camera_embedding(self, embedding: list[float]) -> str:
+        """Entry point for camera loop to submit one face embedding."""
+        if not self._camera_identity:
+            return "camera-disabled"
+        event = self._camera_identity.observe_embedding(embedding)
+        if event.status == "recognized" and event.person_id and event.name:
+            self.set_recognized_identity_context(
+                person_id=event.person_id,
+                name=event.name,
+                confidence=event.confidence,
+                face_embeddings_ref=self._settings.camera_identity_store_path,
+            )
+        return event.status
+
+    def observe_camera_frame(self, image_bytes: bytes) -> list[str]:
+        """Entry point for camera loop to submit one encoded frame."""
+        if not self._camera_identity:
+            return []
+        statuses: list[str] = []
+        for event in self._camera_identity.process_frame(image_bytes):
+            statuses.append(event.status)
+            if event.status == "recognized" and event.person_id and event.name:
+                self.set_recognized_identity_context(
+                    person_id=event.person_id,
+                    name=event.name,
+                    confidence=event.confidence,
+                    face_embeddings_ref=self._settings.camera_identity_store_path,
+                )
+        return statuses
 
     def build_system_prompt(self) -> str:
         parts = self._prompt_loader.load_sections()
@@ -173,6 +264,7 @@ class AgentOrchestrator:
         *,
         on_tool_round_start: Callable[[], None] | None = None,
         on_tool_call: Callable[[str, str], None] | None = None,
+        telemetry: TurnTelemetry | None = None,
     ) -> list[dict[str, Any]] | None:
         """Direct MCP fallback for prompts where the model skipped tool calls."""
         text = user_text.lower()
@@ -188,7 +280,15 @@ class AgentOrchestrator:
                     on_tool_round_start()
                 if on_tool_call:
                     on_tool_call(search_tool, args)
+                started = perf_counter()
                 out = await self._mcp.invoke(search_tool, args)
+                if telemetry is not None:
+                    telemetry.add_tool_call(
+                        name=search_tool,
+                        latency_ms=(perf_counter() - started) * 1000,
+                        args_json=args,
+                        result_text=out,
+                    )
                 tool_messages.append({"role": "tool", "tool_call_id": "fallback_search", "content": out})
 
                 # Optional: fetch one top result if model can do it later; here we keep simple/safe.
@@ -203,7 +303,15 @@ class AgentOrchestrator:
                     on_tool_round_start()
                 if on_tool_call:
                     on_tool_call(time_tool, args)
+                started = perf_counter()
                 out = await self._mcp.invoke(time_tool, args)
+                if telemetry is not None:
+                    telemetry.add_tool_call(
+                        name=time_tool,
+                        latency_ms=(perf_counter() - started) * 1000,
+                        args_json=args,
+                        result_text=out,
+                    )
                 tool_messages.append({"role": "tool", "tool_call_id": "fallback_time", "content": out})
                 return tool_messages
 
@@ -218,7 +326,15 @@ class AgentOrchestrator:
                         on_tool_round_start()
                     if on_tool_call:
                         on_tool_call(fetch_tool, args)
+                    started = perf_counter()
                     out = await self._mcp.invoke(fetch_tool, args)
+                    if telemetry is not None:
+                        telemetry.add_tool_call(
+                            name=fetch_tool,
+                            latency_ms=(perf_counter() - started) * 1000,
+                            args_json=args,
+                            result_text=out,
+                        )
                     tool_messages.append({"role": "tool", "tool_call_id": "fallback_fetch", "content": out})
                     return tool_messages
 
@@ -232,7 +348,39 @@ class AgentOrchestrator:
         on_text_delta: Callable[[str], None] | None = None,
         on_tool_round_start: Callable[[], None] | None = None,
         on_tool_call: Callable[[str, str], None] | None = None,
+        on_telemetry: Callable[[TurnTelemetry], None] | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
+        turn_start = perf_counter()
+        telemetry = TurnTelemetry()
+
+        if self._camera_identity and self._camera_identity.name_prompt_pending():
+            if self._camera_identity.pop_name_prompt():
+                prompt_text = self._settings.camera_unknown_prompt
+                history_with_prompt = history + [
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": prompt_text},
+                ]
+                try:
+                    self._memory.ingest_turn(user_text, prompt_text)
+                except Exception:
+                    log.exception("memory.ingest_failed")
+                telemetry.total_turn_latency_ms = (perf_counter() - turn_start) * 1000
+                if on_telemetry:
+                    on_telemetry(telemetry)
+                return history_with_prompt, prompt_text
+
+        if self._camera_identity:
+            enrolled = self._camera_identity.consume_enrollment_name(user_text)
+            if enrolled is not None:
+                self.set_recognized_identity_context(
+                    person_id=enrolled.person_id,
+                    name=enrolled.name,
+                    confidence=1.0,
+                    face_embeddings_ref=self._settings.camera_identity_store_path,
+                )
+                self._memory.upsert_user_profile(name=enrolled.name)
+                user_text = f"My name is {enrolled.name}."
+
         packed_history, recent_history = self._pack_old_history(history)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.build_system_prompt()},
@@ -242,8 +390,12 @@ class AgentOrchestrator:
         messages.extend(recent_history)
         messages.append({"role": "user", "content": user_text})
         tools_payload = [t.to_openai() for t in self._mcp.tools] if self._mcp.tools else None
+        telemetry.prep_latency_ms = (perf_counter() - turn_start) * 1000
         for round_i in range(self._settings.max_tool_rounds):
             log.debug("agent.llm_round", round=round_i, num_tools=len(self._mcp.tools))
+            round_input_chars = estimate_message_chars(messages)
+            round_input_tokens = estimate_message_tokens(messages)
+            llm_start = perf_counter()
             if self._settings.stream_responses:
                 assistant = await self._llm.stream_complete(
                     messages,
@@ -256,11 +408,31 @@ class AgentOrchestrator:
                     tools=tools_payload if tools_payload else None,
                 )
                 assistant = _completion_assistant_as_dict(resp.choices[0].message)
+            llm_latency_ms = (perf_counter() - llm_start) * 1000
+            round_output_chars = len((assistant.get("content") or "").strip())
+            if assistant.get("tool_calls"):
+                round_output_chars += len(json.dumps(assistant["tool_calls"], ensure_ascii=False))
+            telemetry.add_llm_round(
+                round_index=round_i,
+                input_chars=round_input_chars,
+                input_tokens_est=round_input_tokens,
+                output_chars=round_output_chars,
+                output_tokens_est=estimate_tokens_from_text((assistant.get("content") or "").strip())
+                + (
+                    estimate_tokens_from_text(json.dumps(assistant["tool_calls"], ensure_ascii=False))
+                    if assistant.get("tool_calls")
+                    else 0
+                ),
+                latency_ms=llm_latency_ms,
+            )
 
             tool_calls = assistant.get("tool_calls")
             if tool_calls:
                 if not self._mcp.tools:
                     log.warning("agent.unexpected_tool_calls", round=round_i)
+                    telemetry.total_turn_latency_ms = (perf_counter() - turn_start) * 1000
+                    if on_telemetry:
+                        on_telemetry(telemetry)
                     return (
                         history + [{"role": "user", "content": user_text}],
                         "Model requested tools but no MCP servers are connected.",
@@ -274,7 +446,14 @@ class AgentOrchestrator:
                     args = fn.get("arguments") or "{}"
                     if on_tool_call:
                         on_tool_call(name, args)
+                    tool_start = perf_counter()
                     out = await self._mcp.invoke(name, args)
+                    telemetry.add_tool_call(
+                        name=name,
+                        latency_ms=(perf_counter() - tool_start) * 1000,
+                        args_json=args,
+                        result_text=out,
+                    )
                     messages.append(
                         {
                             "role": "tool",
@@ -295,6 +474,7 @@ class AgentOrchestrator:
                     user_text,
                     on_tool_round_start=on_tool_round_start,
                     on_tool_call=on_tool_call,
+                    telemetry=telemetry,
                 )
                 if fallback_msgs:
                     messages.append(
@@ -321,8 +501,14 @@ class AgentOrchestrator:
                     and item["content"].startswith("Packed older conversation (internal):")
                 )
             ]
+            telemetry.total_turn_latency_ms = (perf_counter() - turn_start) * 1000
+            if on_telemetry:
+                on_telemetry(telemetry)
             return new_history, text
 
+        telemetry.total_turn_latency_ms = (perf_counter() - turn_start) * 1000
+        if on_telemetry:
+            on_telemetry(telemetry)
         return (
             history + [{"role": "user", "content": user_text}],
             "Stopped: max tool rounds exceeded.",
