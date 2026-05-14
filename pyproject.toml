@@ -1,27 +1,28 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "beemboy"
-version = "0.1.1"
-description = "Local assistant: llama-server + MCP (Brave Search) agent loop"
+name = "beemboy-offline-assistant"
+version = "0.1.0"
+description = "Fully offline Mac voice-first assistant with local llama.cpp"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-  "openai>=1.55.0",
-  "pydantic>=2.8.0",
-  "pydantic-settings>=2.4.0",
-  "mcp>=1.12.0",
-  "structlog>=24.4.0",
-  "typer>=0.12.0",
-  "numpy>=1.26.0",
-  "onnxruntime>=1.18.0",
-  "sounddevice>=0.4.7",
-]
+authors = [{ name = "mags" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
-beemboy = "beemboy.cli.main:app"
+beemboy = "beemboy.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

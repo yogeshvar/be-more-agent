@@ -1,13 +1,13 @@
-.DS_Store
-.env
 .venv/
 __pycache__/
-*.py[cod]
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
 *.egg-info/
-src/*.egg-info/
-dist/
-build/
-# Local voice model artifacts
-models/*.bin
-models/*.onnx
-models/*.tflite
+
+.DS_Store
+*.db
+*.sqlite
+
+.beemboy/

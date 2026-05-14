@@ -1,3 +1,3 @@
-from beemboy.cli.main import app
+from .cli import main
 
-app()
+raise SystemExit(main())

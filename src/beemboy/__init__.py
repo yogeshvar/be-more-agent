@@ -1,3 +1,5 @@
-"""Beemboy: local llama-server client with MCP tool loop."""
+"""Offline Mac voice assistant package."""
 
-__version__ = "0.1.1"
+__all__ = ["__version__"]
+
+__version__ = "0.1.0"
